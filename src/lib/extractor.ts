@@ -196,12 +196,35 @@ function cropTransparent(
 }
 
 export async function extractAssets(src: string, opts: ExtractOptions): Promise<DetectedAsset[]> {
-  const { threshold, sensitivity, maxWidth = 1200 } = opts;
+  const { threshold, sensitivity, maxWidth = 1200, roi = null } = opts;
   const img = await loadImage(src);
   const { canvas, ctx, w, h } = drawScaled(img, maxWidth);
   const imageData = ctx.getImageData(0, 0, w, h);
   const bg = estimateBackground(imageData.data, w, h);
   const mask = buildMask(imageData.data, w, h, bg, threshold);
+
+  // Apply ROI mask if provided.
+  if (roi) {
+    if (roi.type === "rect") {
+      const rx = Math.round(roi.x * w);
+      const ry = Math.round(roi.y * h);
+      const rw = Math.round(roi.w * w);
+      const rh = Math.round(roi.h * h);
+      const rx2 = rx + rw, ry2 = ry + rh;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (x < rx || x >= rx2 || y < ry || y >= ry2) mask[y * w + x] = 0;
+        }
+      }
+    } else if (roi.type === "poly" && roi.points.length >= 3) {
+      const pts = roi.points.map(p => ({ x: p.x * w, y: p.y * h }));
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!pointInPoly(x + 0.5, y + 0.5, pts)) mask[y * w + x] = 0;
+        }
+      }
+    }
+  }
 
   const comps = connectedComponents(mask, w, h);
 
