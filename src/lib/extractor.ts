@@ -12,10 +12,16 @@ export interface DetectedAsset {
   kind: AssetKind;
 }
 
+export type Roi =
+  | { type: "rect"; x: number; y: number; w: number; h: number } // normalized 0..1
+  | { type: "poly"; points: { x: number; y: number }[] } // normalized 0..1
+  | null;
+
 export interface ExtractOptions {
   threshold: number; // 0..100
   sensitivity: number; // 0..100
   maxWidth?: number;
+  roi?: Roi;
 }
 
 interface RGB { r: number; g: number; b: number }
