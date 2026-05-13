@@ -195,6 +195,15 @@ function cropTransparent(
   return c.toDataURL("image/png");
 }
 
+function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+    if (((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
 export async function extractAssets(src: string, opts: ExtractOptions): Promise<DetectedAsset[]> {
   const { threshold, sensitivity, maxWidth = 1200, roi = null } = opts;
   const img = await loadImage(src);
