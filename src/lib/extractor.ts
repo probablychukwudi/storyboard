@@ -12,10 +12,16 @@ export interface DetectedAsset {
   kind: AssetKind;
 }
 
+export type Roi =
+  | { type: "rect"; x: number; y: number; w: number; h: number } // normalized 0..1
+  | { type: "poly"; points: { x: number; y: number }[] } // normalized 0..1
+  | null;
+
 export interface ExtractOptions {
   threshold: number; // 0..100
   sensitivity: number; // 0..100
   maxWidth?: number;
+  roi?: Roi;
 }
 
 interface RGB { r: number; g: number; b: number }
@@ -189,13 +195,45 @@ function cropTransparent(
   return c.toDataURL("image/png");
 }
 
+function pointInPoly(x: number, y: number, pts: { x: number; y: number }[]): boolean {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+    if (((yi > y) !== (yj > y)) && (x < ((xj - xi) * (y - yi)) / (yj - yi || 1e-9) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
 export async function extractAssets(src: string, opts: ExtractOptions): Promise<DetectedAsset[]> {
-  const { threshold, sensitivity, maxWidth = 1200 } = opts;
+  const { threshold, sensitivity, maxWidth = 1200, roi = null } = opts;
   const img = await loadImage(src);
   const { canvas, ctx, w, h } = drawScaled(img, maxWidth);
   const imageData = ctx.getImageData(0, 0, w, h);
   const bg = estimateBackground(imageData.data, w, h);
   const mask = buildMask(imageData.data, w, h, bg, threshold);
+
+  // Apply ROI mask if provided.
+  if (roi) {
+    if (roi.type === "rect") {
+      const rx = Math.round(roi.x * w);
+      const ry = Math.round(roi.y * h);
+      const rw = Math.round(roi.w * w);
+      const rh = Math.round(roi.h * h);
+      const rx2 = rx + rw, ry2 = ry + rh;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (x < rx || x >= rx2 || y < ry || y >= ry2) mask[y * w + x] = 0;
+        }
+      }
+    } else if (roi.type === "poly" && roi.points.length >= 3) {
+      const pts = roi.points.map(p => ({ x: p.x * w, y: p.y * h }));
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (!pointInPoly(x + 0.5, y + 0.5, pts)) mask[y * w + x] = 0;
+        }
+      }
+    }
+  }
 
   const comps = connectedComponents(mask, w, h);
 
