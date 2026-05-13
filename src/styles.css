@@ -62,26 +62,27 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.129 0.042 264.695);
+  --radius: 0.75rem;
+  --background: oklch(0.995 0.002 280);
+  --foreground: oklch(0.2 0.02 280);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.129 0.042 264.695);
+  --card-foreground: oklch(0.2 0.02 280);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.129 0.042 264.695);
-  --primary: oklch(0.208 0.042 265.755);
-  --primary-foreground: oklch(0.984 0.003 247.858);
-  --secondary: oklch(0.968 0.007 247.896);
-  --secondary-foreground: oklch(0.208 0.042 265.755);
-  --muted: oklch(0.968 0.007 247.896);
-  --muted-foreground: oklch(0.554 0.046 257.417);
-  --accent: oklch(0.968 0.007 247.896);
-  --accent-foreground: oklch(0.208 0.042 265.755);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.984 0.003 247.858);
-  --border: oklch(0.929 0.013 255.508);
-  --input: oklch(0.929 0.013 255.508);
-  --ring: oklch(0.704 0.04 256.788);
+  --popover-foreground: oklch(0.2 0.02 280);
+  --primary: oklch(0.55 0.22 295);
+  --primary-foreground: oklch(0.99 0 0);
+  --primary-soft: oklch(0.96 0.03 295);
+  --secondary: oklch(0.97 0.005 280);
+  --secondary-foreground: oklch(0.25 0.02 280);
+  --muted: oklch(0.97 0.005 280);
+  --muted-foreground: oklch(0.5 0.02 280);
+  --accent: oklch(0.96 0.03 295);
+  --accent-foreground: oklch(0.45 0.22 295);
+  --destructive: oklch(0.6 0.22 27);
+  --destructive-foreground: oklch(0.99 0 0);
+  --border: oklch(0.92 0.008 280);
+  --input: oklch(0.92 0.008 280);
+  --ring: oklch(0.55 0.22 295);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -132,6 +133,10 @@
   --sidebar-ring: oklch(0.551 0.027 264.364);
 }
 
+@theme inline {
+  --color-primary-soft: var(--primary-soft);
+}
+
 @layer base {
   * {
     border-color: var(--color-border);
@@ -140,5 +145,18 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Inter", sans-serif;
   }
 }
+
+.checkerboard {
+  background-image:
+    linear-gradient(45deg, oklch(0.93 0.005 280) 25%, transparent 25%),
+    linear-gradient(-45deg, oklch(0.93 0.005 280) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, oklch(0.93 0.005 280) 75%),
+    linear-gradient(-45deg, transparent 75%, oklch(0.93 0.005 280) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, 8px 0;
+  background-color: oklch(1 0 0);
+}
+
