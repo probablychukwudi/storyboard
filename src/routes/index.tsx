@@ -198,7 +198,60 @@ function Page() {
                     </div>
                   </button>
                 ) : (
-                  <img src={imageSrc} alt="uploaded mockup" className="max-h-[460px] w-auto rounded-md object-contain" />
+                  <ImageRoiCanvas
+                    src={imageSrc}
+                    tool={tool}
+                    roi={roi}
+                    draftRect={draftRect}
+                    polyPoints={polyPoints}
+                    hoverPoint={hoverPoint}
+                    overlayRef={overlayRef}
+                    onPointerDown={(p, e) => {
+                      if (tool === "rect") {
+                        dragStartRef.current = p;
+                        setDraftRect({ x: p.x, y: p.y, w: 0, h: 0 });
+                        (e.target as Element).setPointerCapture?.(e.pointerId);
+                      } else if (tool === "pen") {
+                        if (polyPoints.length >= 3) {
+                          const first = polyPoints[0];
+                          const dx = (first.x - p.x), dy = (first.y - p.y);
+                          if (Math.hypot(dx, dy) < 0.02) {
+                            setRoi({ type: "poly", points: polyPoints });
+                            setPolyPoints([]); setHoverPoint(null); setTool(null);
+                            return;
+                          }
+                        }
+                        setPolyPoints(pts => [...pts, p]);
+                      }
+                    }}
+                    onPointerMove={(p) => {
+                      if (tool === "rect" && dragStartRef.current) {
+                        const s = dragStartRef.current;
+                        setDraftRect({
+                          x: Math.min(s.x, p.x),
+                          y: Math.min(s.y, p.y),
+                          w: Math.abs(p.x - s.x),
+                          h: Math.abs(p.y - s.y),
+                        });
+                      } else if (tool === "pen" && polyPoints.length > 0) {
+                        setHoverPoint(p);
+                      }
+                    }}
+                    onPointerUp={() => {
+                      if (tool === "rect" && draftRect && draftRect.w > 0.01 && draftRect.h > 0.01) {
+                        setRoi({ type: "rect", ...draftRect });
+                        setTool(null);
+                      }
+                      setDraftRect(null);
+                      dragStartRef.current = null;
+                    }}
+                    onDoubleClick={() => {
+                      if (tool === "pen" && polyPoints.length >= 3) {
+                        setRoi({ type: "poly", points: polyPoints });
+                        setPolyPoints([]); setHoverPoint(null); setTool(null);
+                      }
+                    }}
+                  />
                 )}
               </div>
 
@@ -207,17 +260,48 @@ function Page() {
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
               />
 
-              <div className="mt-4 flex items-center justify-between">
+              <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button variant="outline" size="sm" className="gap-2" onClick={() => fileRef.current?.click()}>
-                  <RefreshCw className="h-3.5 w-3.5" /> Replace Image
+                  <RefreshCw className="h-3.5 w-3.5" /> Replace
                 </Button>
+                <div className="mx-1 h-6 w-px bg-border" />
                 <Button
-                  variant="outline" size="icon"
-                  onClick={() => { setImageSrc(null); setAssets([]); }}
+                  variant={tool === "rect" ? "default" : "outline"}
+                  size="sm" className="gap-2"
+                  onClick={() => { setTool(t => t === "rect" ? null : "rect"); setPolyPoints([]); setHoverPoint(null); }}
                   disabled={!imageSrc}
                 >
-                  <Trash2 className="h-4 w-4" />
+                  <Square className="h-3.5 w-3.5" /> Box
                 </Button>
+                <Button
+                  variant={tool === "pen" ? "default" : "outline"}
+                  size="sm" className="gap-2"
+                  onClick={() => { setTool(t => t === "pen" ? null : "pen"); setPolyPoints([]); setHoverPoint(null); setDraftRect(null); }}
+                  disabled={!imageSrc}
+                >
+                  <PenTool className="h-3.5 w-3.5" /> Pen
+                </Button>
+                <Button
+                  variant="outline" size="sm" className="gap-2"
+                  onClick={() => { setRoi(null); setPolyPoints([]); setHoverPoint(null); setDraftRect(null); setTool(null); }}
+                  disabled={!roi && !polyPoints.length && !tool}
+                >
+                  <X className="h-3.5 w-3.5" /> Reset Selection
+                </Button>
+                <div className="ml-auto flex items-center gap-2">
+                  {roi && (
+                    <span className="text-[11px] text-muted-foreground">
+                      {roi.type === "rect" ? "Box selection active" : `Polygon (${roi.points.length} pts)`}
+                    </span>
+                  )}
+                  <Button
+                    variant="outline" size="icon"
+                    onClick={() => { setImageSrc(null); setAssets([]); setRoi(null); }}
+                    disabled={!imageSrc}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
             </section>
 
