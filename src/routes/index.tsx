@@ -40,13 +40,20 @@ function Page() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
+  const [tool, setTool] = useState<"rect" | "pen" | null>(null);
+  const [roi, setRoi] = useState<Roi>(null);
+  const [draftRect, setDraftRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [polyPoints, setPolyPoints] = useState<{ x: number; y: number }[]>([]);
+  const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<number | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  const runExtraction = useCallback(async (src: string, t: number, s: number) => {
+  const runExtraction = useCallback(async (src: string, t: number, s: number, r: Roi) => {
     setLoading(true); setError(null);
     try {
-      const result = await extractAssets(src, { threshold: t, sensitivity: s });
+      const result = await extractAssets(src, { threshold: t, sensitivity: s, roi: r });
       setAssets(prev => {
         const selected = new Set(prev.filter(a => a.selected).map(a => a.id));
         return result.map(a => ({ ...a, selected: selected.has(a.id) }));
@@ -64,10 +71,10 @@ function Page() {
     if (!imageSrc) return;
     if (debounceRef.current) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      runExtraction(imageSrc, threshold, sensitivity);
+      runExtraction(imageSrc, threshold, sensitivity, roi);
     }, 250);
     return () => { if (debounceRef.current) window.clearTimeout(debounceRef.current); };
-  }, [imageSrc, threshold, sensitivity, runExtraction]);
+  }, [imageSrc, threshold, sensitivity, roi, runExtraction]);
 
   const handleFile = (file: File) => {
     if (!file.type.startsWith("image/")) {
