@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Image as ImageIcon, Layers, Palette, History, Sun,
   Download, Settings, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
-  Lightbulb, Loader2,
+  Lightbulb, Loader2, Square, PenTool, X,
 } from "lucide-react";
 import JSZip from "jszip";
-import { extractAssets, assetToSvg, downloadBlob, type DetectedAsset } from "@/lib/extractor";
+import { extractAssets, assetToSvg, downloadBlob, type DetectedAsset, type Roi } from "@/lib/extractor";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
