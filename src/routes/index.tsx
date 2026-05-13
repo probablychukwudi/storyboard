@@ -411,3 +411,108 @@ function Page() {
     </div>
   );
 }
+
+interface Pt { x: number; y: number }
+interface ImageRoiCanvasProps {
+  src: string;
+  tool: "rect" | "pen" | null;
+  roi: Roi;
+  draftRect: { x: number; y: number; w: number; h: number } | null;
+  polyPoints: Pt[];
+  hoverPoint: Pt | null;
+  overlayRef: React.RefObject<HTMLDivElement | null>;
+  onPointerDown: (p: Pt, e: React.PointerEvent) => void;
+  onPointerMove: (p: Pt) => void;
+  onPointerUp: () => void;
+  onDoubleClick: () => void;
+}
+
+function ImageRoiCanvas(props: ImageRoiCanvasProps) {
+  const { src, tool, roi, draftRect, polyPoints, hoverPoint, overlayRef } = props;
+  const toNorm = (e: React.PointerEvent): Pt => {
+    const r = overlayRef.current!.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
+    };
+  };
+  const toPct = (n: number) => `${n * 100}%`;
+  const cursor = tool === "rect" ? "crosshair" : tool === "pen" ? "crosshair" : "default";
+  const previewRect = draftRect ?? (roi?.type === "rect" ? roi : null);
+  const previewPoly = roi?.type === "poly" ? roi.points : null;
+
+  return (
+    <div className="relative inline-block max-h-[460px]">
+      <img src={src} alt="uploaded mockup" className="block max-h-[460px] w-auto rounded-md object-contain select-none" draggable={false} />
+      <div
+        ref={overlayRef}
+        className="absolute inset-0 touch-none"
+        style={{ cursor }}
+        onPointerDown={e => { if (tool) props.onPointerDown(toNorm(e), e); }}
+        onPointerMove={e => { if (tool) props.onPointerMove(toNorm(e)); }}
+        onPointerUp={() => { if (tool) props.onPointerUp(); }}
+        onDoubleClick={() => props.onDoubleClick()}
+      >
+        <svg className="absolute inset-0 h-full w-full overflow-visible" preserveAspectRatio="none">
+          {/* Dimming mask outside selection */}
+          {(previewRect || (previewPoly && previewPoly.length >= 3)) && (
+            <defs>
+              <mask id="roi-mask">
+                <rect x="0" y="0" width="100%" height="100%" fill="white" />
+                {previewRect && (
+                  <rect
+                    x={toPct(previewRect.x)} y={toPct(previewRect.y)}
+                    width={toPct(previewRect.w)} height={toPct(previewRect.h)}
+                    fill="black"
+                  />
+                )}
+                {previewPoly && previewPoly.length >= 3 && (
+                  <polygon
+                    points={previewPoly.map(p => `${p.x * 100}%,${p.y * 100}%`).join(" ")}
+                    fill="black"
+                  />
+                )}
+              </mask>
+            </defs>
+          )}
+          {(previewRect || (previewPoly && previewPoly.length >= 3)) && (
+            <rect x="0" y="0" width="100%" height="100%" fill="oklch(0 0 0 / 0.45)" mask="url(#roi-mask)" />
+          )}
+
+          {/* Rect outline */}
+          {previewRect && (
+            <rect
+              x={toPct(previewRect.x)} y={toPct(previewRect.y)}
+              width={toPct(previewRect.w)} height={toPct(previewRect.h)}
+              fill="none" stroke="oklch(0.55 0.22 295)" strokeWidth="2" strokeDasharray="4 3"
+            />
+          )}
+
+          {/* Poly outline (committed) */}
+          {previewPoly && previewPoly.length >= 3 && (
+            <polygon
+              points={previewPoly.map(p => `${p.x * 100}%,${p.y * 100}%`).join(" ")}
+              fill="none" stroke="oklch(0.55 0.22 295)" strokeWidth="2" strokeDasharray="4 3"
+            />
+          )}
+
+          {/* Pen draft polyline */}
+          {tool === "pen" && polyPoints.length > 0 && (
+            <>
+              <polyline
+                points={[
+                  ...polyPoints.map(p => `${p.x * 100}%,${p.y * 100}%`),
+                  ...(hoverPoint ? [`${hoverPoint.x * 100}%,${hoverPoint.y * 100}%`] : []),
+                ].join(" ")}
+                fill="oklch(0.55 0.22 295 / 0.15)" stroke="oklch(0.55 0.22 295)" strokeWidth="2"
+              />
+              {polyPoints.map((p, i) => (
+                <circle key={i} cx={toPct(p.x)} cy={toPct(p.y)} r={i === 0 ? 5 : 3} fill="white" stroke="oklch(0.55 0.22 295)" strokeWidth="2" />
+              ))}
+            </>
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
