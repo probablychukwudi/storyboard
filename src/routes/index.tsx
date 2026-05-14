@@ -231,12 +231,7 @@ function Page() {
           {NAV.map(n => (
             <button
               key={n.label}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
-                n.active
-                  ? "bg-primary-soft text-primary font-medium"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              )}
+              className="flex items-center gap-3 rounded-md bg-primary-soft px-3 py-2 text-sm font-medium text-primary"
             >
               <n.icon className="h-4 w-4" />
               {n.label}
