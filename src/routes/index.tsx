@@ -27,11 +27,7 @@ export const Route = createFileRoute("/")({
 });
 
 const NAV = [
-  { icon: ImageIcon, label: "Extract", active: true },
-  { icon: Layers, label: "Assets" },
-  { icon: Layers, label: "Layers" },
-  { icon: Palette, label: "Colors" },
-  { icon: History, label: "Export History" },
+  { icon: ImageIcon, label: "Extract", id: "extract" as const },
 ];
 
 const PAGE_SIZE = 16;
