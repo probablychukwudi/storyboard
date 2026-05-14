@@ -292,9 +292,6 @@ function Page() {
             <Download className="h-4 w-4" />
             Export {selectedAssets.length ? `Selected (${selectedAssets.length})` : "All"} (ZIP)
           </Button>
-          <Button variant="outline" className="gap-2">
-            <Settings className="h-4 w-4" /> Settings
-          </Button>
         </div>
 
         <div className="flex flex-1 flex-col gap-5 overflow-auto p-6">
