@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Sparkles, Image as ImageIcon, Layers, Palette, History, Sun,
-  Download, Settings, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
+  Sparkles, Image as ImageIcon, Sun, Moon,
+  Download, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
   Lightbulb, Loader2, Square, PenTool, X, FileImage, FileCode2, Copy, Pencil, Check,
 } from "lucide-react";
 import JSZip from "jszip";
@@ -27,11 +27,7 @@ export const Route = createFileRoute("/")({
 });
 
 const NAV = [
-  { icon: ImageIcon, label: "Extract", active: true },
-  { icon: Layers, label: "Assets" },
-  { icon: Layers, label: "Layers" },
-  { icon: Palette, label: "Colors" },
-  { icon: History, label: "Export History" },
+  { icon: ImageIcon, label: "Extract", id: "extract" as const },
 ];
 
 const PAGE_SIZE = 16;
@@ -49,7 +45,7 @@ function Page() {
   const [assets, setAssets] = useState<DetectedAsset[]>([]);
   const [threshold, setThreshold] = useState(() => readNum("svgex.threshold", 68));
   const [sensitivity, setSensitivity] = useState(() => readNum("svgex.sensitivity", 50));
-  const [format, setFormat] = useState<ExportFormat>(() => (localStorage.getItem("svgex.format") as ExportFormat) || "svg");
+  const [format, setFormat] = useState<ExportFormat>(() => (typeof window !== "undefined" ? (localStorage.getItem("svgex.format") as ExportFormat) : null) || "svg");
   const [filter, setFilter] = useState<AssetKind | "all">("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -235,12 +231,7 @@ function Page() {
           {NAV.map(n => (
             <button
               key={n.label}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors",
-                n.active
-                  ? "bg-primary-soft text-primary font-medium"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
-              )}
+              className="flex items-center gap-3 rounded-md bg-primary-soft px-3 py-2 text-sm font-medium text-primary"
             >
               <n.icon className="h-4 w-4" />
               {n.label}
@@ -257,9 +248,22 @@ function Page() {
               Paste an image with ⌘V. Use Box or Pen to limit detection. Press Esc to cancel.
             </p>
           </div>
-          <button className="mt-3 flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm">
-            <span className="flex items-center gap-2"><Sun className="h-4 w-4" /> Light Mode</span>
-            <ChevronRight className="h-4 w-4 rotate-90 text-muted-foreground" />
+          <button
+            onClick={() => {
+              const el = document.documentElement;
+              const next = !el.classList.contains("dark");
+              el.classList.toggle("dark", next);
+              try { localStorage.setItem("svgex.theme", next ? "dark" : "light"); } catch {}
+            }}
+            className="mt-3 flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted"
+          >
+            <span className="flex items-center gap-2">
+              <Sun className="h-4 w-4 dark:hidden" />
+              <Moon className="hidden h-4 w-4 dark:block" />
+              <span className="dark:hidden">Light Mode</span>
+              <span className="hidden dark:inline">Dark Mode</span>
+            </span>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
       </aside>
@@ -287,9 +291,6 @@ function Page() {
           >
             <Download className="h-4 w-4" />
             Export {selectedAssets.length ? `Selected (${selectedAssets.length})` : "All"} (ZIP)
-          </Button>
-          <Button variant="outline" className="gap-2">
-            <Settings className="h-4 w-4" /> Settings
           </Button>
         </div>
 
