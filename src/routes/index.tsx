@@ -45,7 +45,7 @@ function Page() {
   const [assets, setAssets] = useState<DetectedAsset[]>([]);
   const [threshold, setThreshold] = useState(() => readNum("svgex.threshold", 68));
   const [sensitivity, setSensitivity] = useState(() => readNum("svgex.sensitivity", 50));
-  const [format, setFormat] = useState<ExportFormat>(() => (localStorage.getItem("svgex.format") as ExportFormat) || "svg");
+  const [format, setFormat] = useState<ExportFormat>(() => (typeof window !== "undefined" ? (localStorage.getItem("svgex.format") as ExportFormat) : null) || "svg");
   const [filter, setFilter] = useState<AssetKind | "all">("all");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
