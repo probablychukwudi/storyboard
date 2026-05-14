@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Sparkles, Image as ImageIcon, Layers, Palette, History, Sun,
-  Download, Settings, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
+  Sparkles, Image as ImageIcon, Sun, Moon,
+  Download, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
   Lightbulb, Loader2, Square, PenTool, X, FileImage, FileCode2, Copy, Pencil, Check,
 } from "lucide-react";
 import JSZip from "jszip";
