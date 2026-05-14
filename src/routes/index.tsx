@@ -248,9 +248,22 @@ function Page() {
               Paste an image with ⌘V. Use Box or Pen to limit detection. Press Esc to cancel.
             </p>
           </div>
-          <button className="mt-3 flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm">
-            <span className="flex items-center gap-2"><Sun className="h-4 w-4" /> Light Mode</span>
-            <ChevronRight className="h-4 w-4 rotate-90 text-muted-foreground" />
+          <button
+            onClick={() => {
+              const el = document.documentElement;
+              const next = !el.classList.contains("dark");
+              el.classList.toggle("dark", next);
+              try { localStorage.setItem("svgex.theme", next ? "dark" : "light"); } catch {}
+            }}
+            className="mt-3 flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted"
+          >
+            <span className="flex items-center gap-2">
+              <Sun className="h-4 w-4 dark:hidden" />
+              <Moon className="hidden h-4 w-4 dark:block" />
+              <span className="dark:hidden">Light Mode</span>
+              <span className="hidden dark:inline">Dark Mode</span>
+            </span>
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
           </button>
         </div>
       </aside>
