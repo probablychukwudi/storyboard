@@ -1,703 +1,2256 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Sparkles, Image as ImageIcon, Sun, Moon,
-  Download, Upload, Trash2, RefreshCw, ChevronLeft, ChevronRight,
-  Lightbulb, Loader2, Square, PenTool, X, FileImage, FileCode2, Copy, Pencil, Check,
+  forwardRef,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type Dispatch,
+  type MouseEvent,
+  type PointerEvent,
+  type Ref,
+  type ReactNode,
+  type SetStateAction,
+  type WheelEvent,
+} from "react";
+import {
+  Archive,
+  Check,
+  Copy,
+  Download,
+  FileJson,
+  Image as ImageIcon,
+  Info,
+  Loader2,
+  Maximize2,
+  Minus,
+  Move,
+  Package,
+  PenTool,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Settings,
+  SlidersHorizontal,
+  Sparkles,
+  Square,
+  Trash2,
+  Upload,
+  X,
 } from "lucide-react";
-import JSZip from "jszip";
-import { toast } from "sonner";
-import {
-  extractAssets, assetToSvg, downloadBlob, dataUrlToBlob,
-  type DetectedAsset, type Roi, type AssetKind,
-} from "@/lib/extractor";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { createManualAssetFromSelection, extractAssetsFromSource } from "@/lib/extractor";
+import {
+  downloadBlob,
+  exportAssetZip,
+  getZipPreviewPaths,
+  platformAssetFileBase,
+  selectAssetsForExport,
+} from "@/lib/export-zip";
+import { formatBytes, slugifyName } from "@/lib/naming";
+import { loadImageFile, rgbaToHex } from "@/lib/image-utils";
+import { assetSparkReducer } from "@/state/asset-spark-reducer";
+import { initialAssetSparkState } from "@/state/default-state";
+import type {
+  ActiveView,
+  AssetSparkState,
+  DetectionSettings,
+  ExportSettings,
+  ExtractionMode,
+  ExtractedAsset,
+  ManualSelection,
+  PlatformPreset,
+  Point,
+  SourceImage,
+} from "@/state/asset-spark-types";
 
 export const Route = createFileRoute("/")({
   component: Page,
   head: () => ({
     meta: [
-      { title: "SVG Extractor — AI Image to SVG Assets" },
-      { name: "description", content: "Turn AI-generated UI mockups into reusable SVG assets in your browser." },
+      { title: "Asset Spark — Local Asset Extraction Studio" },
+      {
+        name: "description",
+        content: "Extract, inspect, and package assets from generated images.",
+      },
     ],
   }),
 });
 
-const NAV = [
-  { icon: ImageIcon, label: "Extract", id: "extract" as const },
+const navItems: Array<{ id: ActiveView; label: string; icon: typeof ImageIcon }> = [
+  { id: "extract", label: "Extract", icon: ImageIcon },
+  { id: "assets", label: "Assets", icon: Archive },
+  { id: "export", label: "Export", icon: Package },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
-const PAGE_SIZE = 16;
-const KIND_FILTERS: { key: AssetKind | "all"; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "icon", label: "Icons" },
-  { key: "button", label: "Buttons" },
-  { key: "text", label: "Text" },
-  { key: "illustration", label: "Illustrations" },
-];
-type ExportFormat = "svg" | "png" | "both";
+type ManualTool = "box" | "pen" | null;
+
+const MIN_CANVAS_ZOOM = 0.05;
+const MAX_CANVAS_ZOOM = 6;
+const CANVAS_ZOOM_STEP = 1.18;
+
+function clampCanvasZoom(value: number) {
+  return Math.max(MIN_CANVAS_ZOOM, Math.min(MAX_CANVAS_ZOOM, Number(value.toFixed(4))));
+}
 
 function Page() {
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
-  const [assets, setAssets] = useState<DetectedAsset[]>([]);
-  const [threshold, setThreshold] = useState(() => readNum("svgex.threshold", 68));
-  const [sensitivity, setSensitivity] = useState(() => readNum("svgex.sensitivity", 50));
-  const [format, setFormat] = useState<ExportFormat>(() => (typeof window !== "undefined" ? (localStorage.getItem("svgex.format") as ExportFormat) : null) || "svg");
-  const [filter, setFilter] = useState<AssetKind | "all">("all");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(0);
-  const [tool, setTool] = useState<"rect" | "pen" | null>(null);
-  const [roi, setRoi] = useState<Roi>(null);
-  const [draftRect, setDraftRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const [polyPoints, setPolyPoints] = useState<{ x: number; y: number }[]>([]);
-  const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number } | null>(null);
-  const [hoverAssetId, setHoverAssetId] = useState<string | null>(null);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const [imageSize, setImageSize] = useState<{ w: number; h: number } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<number | null>(null);
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [state, dispatch] = useReducer(assetSparkReducer, initialAssetSparkState);
 
-  useEffect(() => { localStorage.setItem("svgex.threshold", String(threshold)); }, [threshold]);
-  useEffect(() => { localStorage.setItem("svgex.sensitivity", String(sensitivity)); }, [sensitivity]);
-  useEffect(() => { localStorage.setItem("svgex.format", format); }, [format]);
-
-  const runExtraction = useCallback(async (src: string, t: number, s: number, r: Roi) => {
-    setLoading(true); setError(null);
-    try {
-      const result = await extractAssets(src, { threshold: t, sensitivity: s, roi: r });
-      setAssets(prev => {
-        const selected = new Set(prev.filter(a => a.selected).map(a => a.id));
-        const names = new Map(prev.map(a => [a.id, a.name]));
-        return result.map(a => ({
-          ...a,
-          selected: selected.has(a.id),
-          name: names.get(a.id) ?? a.name,
-        }));
-      });
-      setPage(0);
-    } catch (e) {
-      console.error(e);
-      setError("Failed to analyze image. Please try a different file.");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!imageSrc) return;
-    if (debounceRef.current) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      runExtraction(imageSrc, threshold, sensitivity, roi);
-    }, 250);
-    return () => { if (debounceRef.current) window.clearTimeout(debounceRef.current); };
-  }, [imageSrc, threshold, sensitivity, roi, runExtraction]);
-
-  // Track natural image size for bbox overlay
-  useEffect(() => {
-    if (!imageSrc) { setImageSize(null); return; }
-    const img = new Image();
-    img.onload = () => {
-      const max = 1200;
-      const scale = img.width > max ? max / img.width : 1;
-      setImageSize({ w: Math.round(img.width * scale), h: Math.round(img.height * scale) });
-    };
-    img.src = imageSrc;
-  }, [imageSrc]);
-
-  const handleFile = (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      setError("Please upload a PNG or JPEG image.");
-      toast.error("Unsupported file type");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => { setImageSrc(reader.result as string); setRoi(null); toast.success("Image loaded"); };
-    reader.onerror = () => setError("Could not read file.");
-    reader.readAsDataURL(file);
-  };
-
-  const onDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const f = e.dataTransfer.files?.[0]; if (f) handleFile(f);
-  };
-
-  // Paste image from clipboard
-  useEffect(() => {
-    const onPaste = (e: ClipboardEvent) => {
-      const item = Array.from(e.clipboardData?.items ?? []).find(i => i.type.startsWith("image/"));
-      const file = item?.getAsFile();
-      if (file) handleFile(file);
-    };
-    window.addEventListener("paste", onPaste);
-    return () => window.removeEventListener("paste", onPaste);
-  }, []);
-
-  const filteredAssets = useMemo(
-    () => filter === "all" ? assets : assets.filter(a => a.kind === filter),
-    [assets, filter],
+  const activeAssets = useMemo(
+    () => state.assets.filter((asset) => !asset.rejected),
+    [state.assets],
   );
-  const selectedAssets = useMemo(() => filteredAssets.filter(a => a.selected), [filteredAssets]);
-  const allSelected = filteredAssets.length > 0 && selectedAssets.length === filteredAssets.length;
+  const visibleAssets = useMemo(
+    () => (state.showRejected ? state.assets : activeAssets),
+    [activeAssets, state.assets, state.showRejected],
+  );
+  const selectedAsset = useMemo(
+    () => state.assets.find((asset) => asset.id === state.selectedAssetId) ?? null,
+    [state.assets, state.selectedAssetId],
+  );
+  const exportableAssets = useMemo(
+    () => selectAssetsForExport(state.assets, state.exportSettings.scope),
+    [state.assets, state.exportSettings.scope],
+  );
 
-  const toggleAll = () => {
-    const ids = new Set(filteredAssets.map(a => a.id));
-    setAssets(prev => prev.map(a => ids.has(a.id) ? { ...a, selected: !allSelected } : a));
-  };
-  const toggleAsset = (id: string) =>
-    setAssets(prev => prev.map(a => a.id === id ? { ...a, selected: !a.selected } : a));
+  const selectedCount = activeAssets.filter((asset) => asset.selected).length;
+  const rejectedCount = state.assets.length - activeAssets.length;
+  const allActiveSelected =
+    activeAssets.length > 0 && activeAssets.every((asset) => asset.selected);
 
-  const renameAsset = (id: string, name: string) => {
-    const safe = name.trim().replace(/[^a-zA-Z0-9-_ ]/g, "").slice(0, 60) || "asset";
-    setAssets(prev => prev.map(a => a.id === id ? { ...a, name: safe } : a));
-  };
+  const runDetection = useCallback(
+    async (source = state.sourceImage, settings = state.detectionSettings) => {
+      if (!source) return;
+      dispatch({ type: "ANALYSIS_STARTED" });
+      try {
+        const result = await extractAssetsFromSource(source, settings);
+        dispatch({
+          type: "ANALYSIS_COMPLETED",
+          assets: result.assets,
+          backgroundColor: result.backgroundColor,
+        });
+      } catch (error) {
+        dispatch({
+          type: "ANALYSIS_FAILED",
+          error:
+            error instanceof Error ? error.message : "Detection failed while reading canvas data.",
+        });
+      }
+    },
+    [state.detectionSettings, state.sourceImage],
+  );
 
-  const downloadOne = (a: DetectedAsset, fmt: ExportFormat) => {
-    if (fmt === "svg" || fmt === "both") {
-      downloadBlob(new Blob([assetToSvg(a)], { type: "image/svg+xml" }), `${a.name}.svg`);
-    }
-    if (fmt === "png" || fmt === "both") {
-      downloadBlob(dataUrlToBlob(a.preview), `${a.name}.png`);
-    }
-    toast.success(`Downloaded ${a.name}`);
-  };
+  const handleFile = useCallback(
+    async (file: File) => {
+      dispatch({ type: "ANALYSIS_STARTED" });
+      try {
+        const image = await loadImageFile(file);
+        dispatch({ type: "IMAGE_LOADED", image });
+        await runDetection(image, state.detectionSettings);
+      } catch (error) {
+        dispatch({
+          type: "ANALYSIS_FAILED",
+          error: error instanceof Error ? error.message : "Could not import that image.",
+        });
+      }
+    },
+    [runDetection, state.detectionSettings],
+  );
 
-  const copySvg = async (a: DetectedAsset) => {
-    try {
-      await navigator.clipboard.writeText(assetToSvg(a));
-      toast.success("SVG copied to clipboard");
-    } catch {
-      toast.error("Couldn't copy");
-    }
-  };
-
-  const exportZip = async (which: DetectedAsset[]) => {
-    if (!which.length) { toast.error("Nothing to export"); return; }
-    const zip = new JSZip();
-    which.forEach((a, i) => {
-      const base = a.name || `asset-${i}`;
-      if (format === "svg" || format === "both") zip.file(`${base}.svg`, assetToSvg(a));
-      if (format === "png" || format === "both") zip.file(`${base}.png`, dataUrlToBlob(a.preview));
+  const handleExport = useCallback(async () => {
+    if (!state.sourceImage || !exportableAssets.length) return;
+    const zip = await exportAssetZip({
+      sourceImage: state.sourceImage,
+      assets: exportableAssets,
+      detectionSettings: state.detectionSettings,
+      exportSettings: state.exportSettings,
+      backgroundColor: state.backgroundColor,
     });
-    const blob = await zip.generateAsync({ type: "blob" });
-    downloadBlob(blob, "svg-extractor-assets.zip");
-    toast.success(`Exported ${which.length} asset${which.length > 1 ? "s" : ""}`);
-  };
+    const fileName = "asset-spark-export.zip";
+    downloadBlob(zip, fileName);
+    dispatch({
+      type: "EXPORT_COMPLETED",
+      summary: {
+        assetCount: exportableAssets.length,
+        pngCount: state.exportSettings.includePng ? exportableAssets.length : 0,
+        pixelSvgCount: state.exportSettings.includePixelSvg ? exportableAssets.length : 0,
+        includesManifest: state.exportSettings.includeManifest,
+        includesReadme: state.exportSettings.includeReadme,
+        fileName,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  }, [
+    exportableAssets,
+    state.backgroundColor,
+    state.detectionSettings,
+    state.exportSettings,
+    state.sourceImage,
+  ]);
 
-  const totalPages = Math.max(1, Math.ceil(filteredAssets.length / PAGE_SIZE));
-  const visible = filteredAssets.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  const hoveredAsset = hoverAssetId ? assets.find(a => a.id === hoverAssetId) : null;
+  const handleCreateManualAsset = useCallback(
+    async (selection: ManualSelection) => {
+      if (!state.sourceImage) return;
+      try {
+        const asset = await createManualAssetFromSelection(
+          state.sourceImage,
+          selection,
+          state.assets.length,
+        );
+        dispatch({ type: "ADD_MANUAL_ASSET", asset });
+      } catch (error) {
+        dispatch({
+          type: "ANALYSIS_FAILED",
+          error: error instanceof Error ? error.message : "Manual crop failed.",
+        });
+      }
+    },
+    [state.assets.length, state.sourceImage],
+  );
 
-  // Keyboard shortcuts
+  const handleExtractionModeChange = useCallback((mode: ExtractionMode) => {
+    dispatch({ type: "SET_EXTRACTION_MODE", mode });
+  }, []);
+
+  const handleCanvasViewportChange = useCallback(
+    (viewport: Partial<AssetSparkState["canvasViewport"]>) => {
+      dispatch({ type: "UPDATE_CANVAS_VIEWPORT", viewport });
+    },
+    [],
+  );
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
-      if (e.key === "Escape") { setTool(null); setPolyPoints([]); setDraftRect(null); }
-      else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && assets.length) {
-        e.preventDefault(); toggleAll();
-      } else if (e.key === "Delete" || e.key === "Backspace") {
-        if (selectedAssets.length) setAssets(prev => prev.map(a => ({ ...a, selected: false })));
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (isTyping) return;
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        dispatch({ type: "SET_ALL_ACTIVE_SELECTED", selected: true });
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "e") {
+        event.preventDefault();
+        if (exportableAssets.length) void handleExport();
+      }
+      if (event.key === "Escape") {
+        dispatch({ type: "SELECT_ASSET", assetId: null });
+      }
+      if ((event.key === "Backspace" || event.key === "Delete") && state.selectedAssetId) {
+        dispatch({ type: "REJECT_ASSET", assetId: state.selectedAssetId });
       }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [assets, selectedAssets, toggleAll]);
 
-  const kindCount = (k: AssetKind | "all") =>
-    k === "all" ? assets.length : assets.filter(a => a.kind === k).length;
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [exportableAssets.length, handleExport, state.selectedAssetId]);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-background text-foreground">
-      {/* Sidebar */}
-      <aside className="flex w-60 flex-col border-r bg-card">
-        <div className="flex items-center gap-2 px-5 py-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-soft">
-            <Sparkles className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold leading-tight">SVG Extractor</div>
-            <div className="text-[11px] text-muted-foreground">AI Image to SVG Assets</div>
-          </div>
-        </div>
+    <div className="grid h-screen w-screen grid-cols-[220px_minmax(0,1fr)_340px] grid-rows-[58px_minmax(0,1fr)_238px] overflow-hidden bg-background text-foreground">
+      <Sidebar
+        activeView={state.activeView}
+        onViewChange={(view) => dispatch({ type: "SET_VIEW", view })}
+      />
+      <TopBar
+        state={state}
+        activeCount={activeAssets.length}
+        selectedCount={selectedCount}
+        rejectedCount={rejectedCount}
+        exportableCount={exportableAssets.length}
+        onExportView={() => dispatch({ type: "SET_VIEW", view: "export" })}
+      />
 
-        <nav className="mt-2 flex flex-col gap-1 px-3">
-          {NAV.map(n => (
-            <button
-              key={n.label}
-              className="flex items-center gap-3 rounded-md bg-primary-soft px-3 py-2 text-sm font-medium text-primary"
-            >
-              <n.icon className="h-4 w-4" />
-              {n.label}
-            </button>
-          ))}
-        </nav>
-
-        <div className="mt-auto p-4">
-          <div className="rounded-lg border bg-muted/40 p-3">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
-              <Sparkles className="h-3.5 w-3.5" /> Pro tip
-            </div>
-            <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-              Paste an image with ⌘V. Use Box or Pen to limit detection. Press Esc to cancel.
-            </p>
-          </div>
-          <button
-            onClick={() => {
-              const el = document.documentElement;
-              const next = !el.classList.contains("dark");
-              el.classList.toggle("dark", next);
-              try { localStorage.setItem("svgex.theme", next ? "dark" : "light"); } catch {}
-            }}
-            className="mt-3 flex w-full items-center justify-between rounded-md border px-3 py-2 text-sm hover:bg-muted"
-          >
-            <span className="flex items-center gap-2">
-              <Sun className="h-4 w-4 dark:hidden" />
-              <Moon className="hidden h-4 w-4 dark:block" />
-              <span className="dark:hidden">Light Mode</span>
-              <span className="hidden dark:inline">Dark Mode</span>
-            </span>
-            <ChevronRight className="h-4 w-4 text-muted-foreground" />
-          </button>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="flex flex-1 flex-col overflow-hidden">
-        {/* Top bar */}
-        <div className="flex items-center justify-end gap-2 border-b bg-card px-6 py-3">
-          <div className="mr-2 flex items-center gap-1 rounded-md border bg-muted/30 p-0.5">
-            {(["svg", "png", "both"] as ExportFormat[]).map(f => (
-              <button
-                key={f}
-                onClick={() => setFormat(f)}
-                className={cn(
-                  "rounded px-2.5 py-1 text-xs font-medium uppercase transition-colors",
-                  format === f ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                )}
-              >{f}</button>
-            ))}
-          </div>
-          <Button
-            onClick={() => exportZip(selectedAssets.length ? selectedAssets : filteredAssets)}
-            disabled={!filteredAssets.length}
-            className="gap-2"
-          >
-            <Download className="h-4 w-4" />
-            Export {selectedAssets.length ? `Selected (${selectedAssets.length})` : "All"} (ZIP)
-          </Button>
-        </div>
-
-        <div className="flex flex-1 flex-col gap-5 overflow-auto p-6">
-          <div className="grid flex-1 grid-cols-1 gap-5 lg:grid-cols-2">
-            {/* Upload panel */}
-            <section className="flex flex-col rounded-xl border bg-card p-5">
-              <h2 className="text-sm font-semibold">1. Upload your AI-generated UI image</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                Drop, click, or paste (⌘V). We'll detect and extract individual assets.
-              </p>
-
-              <div className="mt-4 flex flex-1 items-center justify-center rounded-lg border bg-muted/30 p-4 min-h-[400px]">
-                {!imageSrc ? (
-                  <button
-                    onClick={() => fileRef.current?.click()}
-                    onDragOver={e => e.preventDefault()}
-                    onDrop={onDrop}
-                    className="flex h-full w-full flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed bg-background/50 p-10 text-center transition-colors hover:border-primary hover:bg-primary-soft/30"
-                  >
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary-soft">
-                      <Upload className="h-5 w-5 text-primary" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-medium">Drop a PNG or JPEG here</div>
-                      <div className="text-xs text-muted-foreground">click to choose · or paste from clipboard</div>
-                    </div>
-                  </button>
-                ) : (
-                  <ImageRoiCanvas
-                    src={imageSrc}
-                    tool={tool}
-                    roi={roi}
-                    draftRect={draftRect}
-                    polyPoints={polyPoints}
-                    hoverPoint={hoverPoint}
-                    overlayRef={overlayRef}
-                    hoverBbox={hoveredAsset && imageSize ? {
-                      x: hoveredAsset.bbox.x / imageSize.w,
-                      y: hoveredAsset.bbox.y / imageSize.h,
-                      w: hoveredAsset.bbox.w / imageSize.w,
-                      h: hoveredAsset.bbox.h / imageSize.h,
-                    } : null}
-                    onPointerDown={(p, e) => {
-                      if (tool === "rect") {
-                        dragStartRef.current = p;
-                        setDraftRect({ x: p.x, y: p.y, w: 0, h: 0 });
-                        (e.target as Element).setPointerCapture?.(e.pointerId);
-                      } else if (tool === "pen") {
-                        if (polyPoints.length >= 3) {
-                          const first = polyPoints[0];
-                          if (Math.hypot(first.x - p.x, first.y - p.y) < 0.02) {
-                            setRoi({ type: "poly", points: polyPoints });
-                            setPolyPoints([]); setHoverPoint(null); setTool(null);
-                            return;
-                          }
-                        }
-                        setPolyPoints(pts => [...pts, p]);
-                      }
-                    }}
-                    onPointerMove={(p) => {
-                      if (tool === "rect" && dragStartRef.current) {
-                        const s = dragStartRef.current;
-                        setDraftRect({
-                          x: Math.min(s.x, p.x), y: Math.min(s.y, p.y),
-                          w: Math.abs(p.x - s.x), h: Math.abs(p.y - s.y),
-                        });
-                      } else if (tool === "pen" && polyPoints.length > 0) {
-                        setHoverPoint(p);
-                      }
-                    }}
-                    onPointerUp={() => {
-                      if (tool === "rect" && draftRect && draftRect.w > 0.01 && draftRect.h > 0.01) {
-                        setRoi({ type: "rect", ...draftRect });
-                        setTool(null);
-                      }
-                      setDraftRect(null);
-                      dragStartRef.current = null;
-                    }}
-                    onDoubleClick={() => {
-                      if (tool === "pen" && polyPoints.length >= 3) {
-                        setRoi({ type: "poly", points: polyPoints });
-                        setPolyPoints([]); setHoverPoint(null); setTool(null);
-                      }
-                    }}
-                  />
-                )}
-              </div>
-
-              <input
-                ref={fileRef} type="file" accept="image/*" hidden
-                onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
-              />
-
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button variant="outline" size="sm" className="gap-2" onClick={() => fileRef.current?.click()}>
-                  <RefreshCw className="h-3.5 w-3.5" /> Replace
-                </Button>
-                <div className="mx-1 h-6 w-px bg-border" />
-                <Button
-                  variant={tool === "rect" ? "default" : "outline"}
-                  size="sm" className="gap-2"
-                  onClick={() => { setTool(t => t === "rect" ? null : "rect"); setPolyPoints([]); setHoverPoint(null); }}
-                  disabled={!imageSrc}
-                ><Square className="h-3.5 w-3.5" /> Box</Button>
-                <Button
-                  variant={tool === "pen" ? "default" : "outline"}
-                  size="sm" className="gap-2"
-                  onClick={() => { setTool(t => t === "pen" ? null : "pen"); setPolyPoints([]); setHoverPoint(null); setDraftRect(null); }}
-                  disabled={!imageSrc}
-                ><PenTool className="h-3.5 w-3.5" /> Pen</Button>
-                <Button
-                  variant="outline" size="sm" className="gap-2"
-                  onClick={() => { setRoi(null); setPolyPoints([]); setHoverPoint(null); setDraftRect(null); setTool(null); }}
-                  disabled={!roi && !polyPoints.length && !tool}
-                ><X className="h-3.5 w-3.5" /> Reset Selection</Button>
-                <div className="ml-auto flex items-center gap-2">
-                  {roi && (
-                    <span className="text-[11px] text-muted-foreground">
-                      {roi.type === "rect" ? "Box selection active" : `Polygon (${roi.points.length} pts)`}
-                    </span>
-                  )}
-                  <Button
-                    variant="outline" size="icon"
-                    onClick={() => { setImageSrc(null); setAssets([]); setRoi(null); }}
-                    disabled={!imageSrc}
-                  ><Trash2 className="h-4 w-4" /></Button>
-                </div>
-              </div>
-            </section>
-
-            {/* Assets panel */}
-            <section className="flex flex-col rounded-xl border bg-card p-5">
-              <div className="flex items-start justify-between">
-                <div>
-                  <h2 className="text-sm font-semibold">
-                    2. Detected Assets {assets.length > 0 && <span className="text-muted-foreground">({assets.length})</span>}
-                  </h2>
-                  <p className="mt-0.5 text-xs text-muted-foreground">Hover for actions. Click to select.</p>
-                </div>
-                <label className="flex items-center gap-2 text-xs">
-                  <Checkbox checked={allSelected} onCheckedChange={toggleAll} disabled={!filteredAssets.length} />
-                  Select All
-                </label>
-              </div>
-
-              {/* Filter chips */}
-              {assets.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {KIND_FILTERS.map(f => {
-                    const count = kindCount(f.key);
-                    if (f.key !== "all" && count === 0) return null;
-                    return (
-                      <button
-                        key={f.key}
-                        onClick={() => { setFilter(f.key); setPage(0); }}
-                        className={cn(
-                          "rounded-full border px-2.5 py-0.5 text-[11px] transition-colors",
-                          filter === f.key
-                            ? "border-primary bg-primary-soft text-primary"
-                            : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-                        )}
-                      >{f.label} <span className="opacity-60">{count}</span></button>
-                    );
-                  })}
-                </div>
-              )}
-
-              <div className="mt-4 flex-1">
-                {loading && !assets.length ? (
-                  <div className="flex h-full min-h-[400px] items-center justify-center text-muted-foreground">
-                    <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Analyzing image…
-                  </div>
-                ) : error ? (
-                  <div className="flex h-full min-h-[400px] items-center justify-center text-sm text-destructive">{error}</div>
-                ) : !filteredAssets.length ? (
-                  <div className="flex h-full min-h-[400px] items-center justify-center text-sm text-muted-foreground">
-                    {assets.length ? "No assets match this filter." : "Upload an image to see detected assets."}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
-                    {visible.map(a => (
-                      <div
-                        key={a.id}
-                        className="group relative"
-                        onMouseEnter={() => setHoverAssetId(a.id)}
-                        onMouseLeave={() => setHoverAssetId(prev => prev === a.id ? null : prev)}
-                      >
-                        <button
-                          onClick={() => toggleAsset(a.id)}
-                          className={cn(
-                            "checkerboard relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg border-2 p-2 transition-all",
-                            a.selected ? "border-primary ring-2 ring-primary/20" : "border-border hover:border-primary/50"
-                          )}
-                        >
-                          <img src={a.preview} alt={a.name} className="max-h-full max-w-full object-contain" />
-                          {a.selected && (
-                            <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                              <Check className="h-3 w-3" />
-                            </span>
-                          )}
-                        </button>
-                        {/* Hover actions */}
-                        <div className="pointer-events-none absolute inset-x-1 top-1 flex justify-end gap-1 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
-                          <IconAction title="Download SVG" onClick={() => downloadOne(a, "svg")}><FileCode2 className="h-3 w-3" /></IconAction>
-                          <IconAction title="Download PNG" onClick={() => downloadOne(a, "png")}><FileImage className="h-3 w-3" /></IconAction>
-                          <IconAction title="Copy SVG" onClick={() => copySvg(a)}><Copy className="h-3 w-3" /></IconAction>
-                        </div>
-                        {/* Name */}
-                        <div className="mt-1.5 flex items-center gap-1 px-0.5">
-                          {renamingId === a.id ? (
-                            <>
-                              <input
-                                autoFocus
-                                value={renameValue}
-                                onChange={e => setRenameValue(e.target.value)}
-                                onKeyDown={e => {
-                                  if (e.key === "Enter") { renameAsset(a.id, renameValue); setRenamingId(null); }
-                                  if (e.key === "Escape") setRenamingId(null);
-                                }}
-                                onBlur={() => { renameAsset(a.id, renameValue); setRenamingId(null); }}
-                                className="min-w-0 flex-1 rounded border bg-background px-1.5 py-0.5 text-[11px] outline-none focus:border-primary"
-                              />
-                            </>
-                          ) : (
-                            <>
-                              <span className="truncate text-[11px] text-muted-foreground" title={a.name}>{a.name}</span>
-                              <button
-                                onClick={() => { setRenameValue(a.name); setRenamingId(a.id); }}
-                                className="ml-auto opacity-0 transition-opacity group-hover:opacity-100"
-                                title="Rename"
-                              ><Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" /></button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {filteredAssets.length > PAGE_SIZE && (
-                <div className="mt-4 flex items-center justify-between">
-                  <div className="flex items-center gap-1">
-                    <Button variant="outline" size="icon" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}>
-                      <ChevronLeft className="h-4 w-4" />
-                    </Button>
-                    {Array.from({ length: totalPages }).map((_, i) => (
-                      <Button key={i} variant={i === page ? "default" : "ghost"} size="sm" onClick={() => setPage(i)} className="h-8 w-8 p-0">{i + 1}</Button>
-                    ))}
-                    <Button variant="outline" size="icon" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}>
-                      <ChevronRight className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <span className="text-[11px] text-muted-foreground">
-                    {selectedAssets.length} of {filteredAssets.length} selected
-                  </span>
-                </div>
-              )}
-            </section>
-          </div>
-
-          {/* Detection controls */}
-          <section className="rounded-xl border bg-card p-5">
-            <h2 className="text-sm font-semibold">3. Adjust Detection</h2>
-            <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <div>
-                <div className="mb-2 flex items-center justify-between text-xs">
-                  <span className="font-medium">Threshold</span>
-                  <span className="text-muted-foreground">{threshold}%</span>
-                </div>
-                <Slider value={[threshold]} onValueChange={v => setThreshold(v[0])} max={100} step={1} />
-              </div>
-              <div>
-                <div className="mb-2 flex items-center justify-between text-xs">
-                  <span className="font-medium">Sensitivity</span>
-                  <span className="text-muted-foreground">{sensitivity}%</span>
-                </div>
-                <Slider value={[sensitivity]} onValueChange={v => setSensitivity(v[0])} max={100} step={1} />
-              </div>
-              <div className="flex items-center gap-3 rounded-lg border bg-primary-soft/40 p-3">
-                <Lightbulb className="h-4 w-4 shrink-0 text-primary" />
-                <div className="text-xs leading-relaxed">
-                  <div>Higher threshold = cleaner separation</div>
-                  <div className="text-muted-foreground">Higher sensitivity = keep smaller assets</div>
-                </div>
-              </div>
-            </div>
-            {loading && assets.length > 0 && (
-              <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="h-3 w-3 animate-spin" /> Recomputing…
-              </div>
-            )}
-          </section>
-        </div>
+      <main className="min-h-0 min-w-0 overflow-hidden bg-background">
+        {state.activeView === "extract" && (
+          <ExtractWorkspace
+            state={state}
+            selectedAsset={selectedAsset}
+            onFile={handleFile}
+            onRunDetection={() => runDetection()}
+            onSelectAsset={(assetId) => dispatch({ type: "SELECT_ASSET", assetId })}
+            onHoverAsset={(assetId) => dispatch({ type: "HOVER_ASSET", assetId })}
+            onSettingsChange={(settings) =>
+              dispatch({ type: "UPDATE_DETECTION_SETTINGS", settings })
+            }
+            onCreateManualAsset={handleCreateManualAsset}
+            onExtractionModeChange={handleExtractionModeChange}
+            onCanvasViewportChange={handleCanvasViewportChange}
+          />
+        )}
+        {state.activeView === "assets" && (
+          <AssetLibrary
+            assets={visibleAssets}
+            activeAssets={activeAssets}
+            selectedAssetId={state.selectedAssetId}
+            showRejected={state.showRejected}
+            allActiveSelected={allActiveSelected}
+            onSelectAsset={(assetId) => dispatch({ type: "SELECT_ASSET", assetId })}
+            onHoverAsset={(assetId) => dispatch({ type: "HOVER_ASSET", assetId })}
+            onToggleSelected={(assetId) => dispatch({ type: "TOGGLE_ASSET_SELECTED", assetId })}
+            onReject={(assetId) => dispatch({ type: "REJECT_ASSET", assetId })}
+            onRestore={(assetId) => dispatch({ type: "RESTORE_ASSET", assetId })}
+            onToggleAll={(selected) => dispatch({ type: "SET_ALL_ACTIVE_SELECTED", selected })}
+            onShowRejected={(showRejected) => dispatch({ type: "SET_SHOW_REJECTED", showRejected })}
+          />
+        )}
+        {state.activeView === "export" && (
+          <ExportPanel
+            state={state}
+            exportableAssets={exportableAssets}
+            onSettingsChange={(settings) => dispatch({ type: "UPDATE_EXPORT_SETTINGS", settings })}
+            onExport={handleExport}
+          />
+        )}
+        {state.activeView === "settings" && (
+          <SettingsPanel
+            state={state}
+            onReset={() => dispatch({ type: "RESET_SETTINGS" })}
+            onClear={() => dispatch({ type: "CLEAR_PROJECT" })}
+          />
+        )}
       </main>
+
+      <AssetInspector
+        sourceImage={state.sourceImage}
+        selectedAsset={selectedAsset}
+        activeCount={activeAssets.length}
+        selectedCount={selectedCount}
+        rejectedCount={rejectedCount}
+        backgroundColor={state.backgroundColor}
+        detectionSettings={state.detectionSettings}
+        onRename={(assetId, name) => dispatch({ type: "RENAME_ASSET", assetId, name })}
+        onToggleSelected={(assetId) => dispatch({ type: "TOGGLE_ASSET_SELECTED", assetId })}
+        onReject={(assetId) => dispatch({ type: "REJECT_ASSET", assetId })}
+        onRestore={(assetId) => dispatch({ type: "RESTORE_ASSET", assetId })}
+      />
+
+      <BottomAssetTray
+        assets={visibleAssets}
+        selectedAssetId={state.selectedAssetId}
+        hoveredAssetId={state.hoveredAssetId}
+        showRejected={state.showRejected}
+        allActiveSelected={allActiveSelected}
+        isAnalyzing={state.isAnalyzing}
+        error={state.error}
+        hasSource={Boolean(state.sourceImage)}
+        onSelectAsset={(assetId) => dispatch({ type: "SELECT_ASSET", assetId })}
+        onHoverAsset={(assetId) => dispatch({ type: "HOVER_ASSET", assetId })}
+        onToggleSelected={(assetId) => dispatch({ type: "TOGGLE_ASSET_SELECTED", assetId })}
+        onReject={(assetId) => dispatch({ type: "REJECT_ASSET", assetId })}
+        onRestore={(assetId) => dispatch({ type: "RESTORE_ASSET", assetId })}
+        onToggleAll={(selected) => dispatch({ type: "SET_ALL_ACTIVE_SELECTED", selected })}
+        onShowRejected={(showRejected) => dispatch({ type: "SET_SHOW_REJECTED", showRejected })}
+      />
     </div>
   );
 }
 
-function readNum(key: string, fallback: number) {
-  if (typeof window === "undefined") return fallback;
-  const v = Number(localStorage.getItem(key));
-  return Number.isFinite(v) && v > 0 ? v : fallback;
-}
-
-function IconAction({ children, onClick, title }: { children: React.ReactNode; onClick: () => void; title: string }) {
+function Sidebar({
+  activeView,
+  onViewChange,
+}: {
+  activeView: ActiveView;
+  onViewChange: (view: ActiveView) => void;
+}) {
   return (
-    <button
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
-      title={title}
-      className="flex h-6 w-6 items-center justify-center rounded-md border border-border bg-card/95 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:border-primary hover:text-primary"
-    >{children}</button>
+    <aside className="row-span-3 flex min-h-0 flex-col border-r bg-card">
+      <div className="border-b px-4 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <Sparkles className="h-4 w-4" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold leading-tight">Asset Spark</div>
+            <div className="text-[11px] text-muted-foreground">Local asset studio</div>
+          </div>
+        </div>
+      </div>
+
+      <nav className="flex flex-col gap-1 p-3">
+        {navItems.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => onViewChange(item.id)}
+            className={cn(
+              "flex h-9 items-center gap-3 rounded-md px-3 text-sm transition-colors",
+              activeView === item.id
+                ? "bg-primary-soft text-primary"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            <item.icon className="h-4 w-4" />
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      <div className="mt-auto border-t p-4">
+        <div className="rounded-md border bg-muted/30 p-3 text-xs leading-relaxed">
+          <div className="mb-1 flex items-center gap-1.5 font-medium">
+            <Info className="h-3.5 w-3.5" />
+            Local only
+          </div>
+          <p className="text-muted-foreground">
+            Images are processed in this browser. Pixel SVG preserves appearance but is not editable
+            vector.
+          </p>
+        </div>
+      </div>
+    </aside>
   );
 }
 
-interface Pt { x: number; y: number }
-interface ImageRoiCanvasProps {
-  src: string;
-  tool: "rect" | "pen" | null;
-  roi: Roi;
-  draftRect: { x: number; y: number; w: number; h: number } | null;
-  polyPoints: Pt[];
-  hoverPoint: Pt | null;
-  hoverBbox: { x: number; y: number; w: number; h: number } | null;
-  overlayRef: React.RefObject<HTMLDivElement | null>;
-  onPointerDown: (p: Pt, e: React.PointerEvent) => void;
-  onPointerMove: (p: Pt) => void;
-  onPointerUp: () => void;
-  onDoubleClick: () => void;
+function TopBar({
+  state,
+  activeCount,
+  selectedCount,
+  rejectedCount,
+  exportableCount,
+  onExportView,
+}: {
+  state: AssetSparkState;
+  activeCount: number;
+  selectedCount: number;
+  rejectedCount: number;
+  exportableCount: number;
+  onExportView: () => void;
+}) {
+  return (
+    <header className="col-span-2 flex items-center justify-between border-b bg-card px-4">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span className="truncate">{state.sourceImage?.name ?? "No image loaded"}</span>
+          {state.isAnalyzing && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+        </div>
+        <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          {state.sourceImage ? (
+            <>
+              <span>
+                {state.sourceImage.width}x{state.sourceImage.height}
+              </span>
+              <span>{formatBytes(state.sourceImage.size)}</span>
+              <span>{activeCount} detected</span>
+              <span>{selectedCount} selected</span>
+              {rejectedCount > 0 && <span>{rejectedCount} rejected</span>}
+            </>
+          ) : (
+            <span>Drop an image to extract implementation-ready asset packs.</span>
+          )}
+        </div>
+      </div>
+      <Button onClick={onExportView} disabled={!exportableCount} className="gap-2">
+        <Download className="h-4 w-4" />
+        Export {exportableCount ? `(${exportableCount})` : ""}
+      </Button>
+    </header>
+  );
 }
 
-function ImageRoiCanvas(props: ImageRoiCanvasProps) {
-  const { src, tool, roi, draftRect, polyPoints, hoverPoint, hoverBbox, overlayRef } = props;
-  const toNorm = (e: React.PointerEvent): Pt => {
-    const r = overlayRef.current!.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)),
-    };
+function ExtractWorkspace({
+  state,
+  onFile,
+  onRunDetection,
+  onSelectAsset,
+  onHoverAsset,
+  onSettingsChange,
+  onCreateManualAsset,
+  onExtractionModeChange,
+  onCanvasViewportChange,
+}: {
+  state: AssetSparkState;
+  selectedAsset: ExtractedAsset | null;
+  onFile: (file: File) => void;
+  onRunDetection: () => void;
+  onSelectAsset: (assetId: string | null) => void;
+  onHoverAsset: (assetId: string | null) => void;
+  onSettingsChange: (settings: Partial<DetectionSettings>) => void;
+  onCreateManualAsset: (selection: ManualSelection) => Promise<void>;
+  onExtractionModeChange: (mode: ExtractionMode) => void;
+  onCanvasViewportChange: (viewport: Partial<AssetSparkState["canvasViewport"]>) => void;
+}) {
+  const [manualTool, setManualTool] = useState<ManualTool>(null);
+  const [manualSelection, setManualSelection] = useState<ManualSelection | null>(null);
+  const [draftRect, setDraftRect] = useState<(ManualSelection & { type: "rect" }) | null>(null);
+  const [polyPoints, setPolyPoints] = useState<Point[]>([]);
+  const [hoverPoint, setHoverPoint] = useState<Point | null>(null);
+
+  const resetManualSelection = useCallback(() => {
+    setManualTool(null);
+    setManualSelection(null);
+    setDraftRect(null);
+    setPolyPoints([]);
+    setHoverPoint(null);
+  }, []);
+
+  const createManualAsset = async () => {
+    if (!manualSelection) return;
+    await onCreateManualAsset(manualSelection);
+    resetManualSelection();
   };
-  const toPct = (n: number) => `${n * 100}%`;
-  const cursor = tool ? "crosshair" : "default";
-  const previewRect = draftRect ?? (roi?.type === "rect" ? roi : null);
-  const previewPoly = roi?.type === "poly" ? roi.points : null;
+
+  useEffect(() => {
+    if (state.extractionMode === "auto") resetManualSelection();
+  }, [resetManualSelection, state.extractionMode]);
 
   return (
-    <div className="relative inline-block max-h-[460px]">
-      <img src={src} alt="uploaded mockup" className="block max-h-[460px] w-auto rounded-md object-contain select-none" draggable={false} />
-      <div
-        ref={overlayRef}
-        className="absolute inset-0 touch-none"
-        style={{ cursor }}
-        onPointerDown={e => { if (tool) props.onPointerDown(toNorm(e), e); }}
-        onPointerMove={e => { if (tool) props.onPointerMove(toNorm(e)); }}
-        onPointerUp={() => { if (tool) props.onPointerUp(); }}
-        onDoubleClick={() => props.onDoubleClick()}
-      >
-        <svg className="absolute inset-0 h-full w-full overflow-visible" preserveAspectRatio="none">
-          {(previewRect || (previewPoly && previewPoly.length >= 3)) && (
-            <defs>
-              <mask id="roi-mask">
-                <rect x="0" y="0" width="100%" height="100%" fill="white" />
-                {previewRect && (
-                  <rect x={toPct(previewRect.x)} y={toPct(previewRect.y)} width={toPct(previewRect.w)} height={toPct(previewRect.h)} fill="black" />
-                )}
-                {previewPoly && previewPoly.length >= 3 && (
-                  <polygon points={previewPoly.map(p => `${p.x * 100}%,${p.y * 100}%`).join(" ")} fill="black" />
-                )}
-              </mask>
-            </defs>
-          )}
-          {(previewRect || (previewPoly && previewPoly.length >= 3)) && (
-            <rect x="0" y="0" width="100%" height="100%" fill="oklch(0 0 0 / 0.45)" mask="url(#roi-mask)" />
-          )}
+    <div className="flex h-full min-h-0 flex-col gap-3 p-4">
+      <ExtractionModeSwitch
+        mode={state.extractionMode}
+        disabled={!state.sourceImage}
+        onChange={onExtractionModeChange}
+      />
+      <div className="min-h-0 flex-1 rounded-md border bg-card">
+        {state.sourceImage ? (
+          <SourceCanvas
+            extractionMode={state.extractionMode}
+            sourceImage={state.sourceImage}
+            assets={state.assets}
+            selectedAssetId={state.selectedAssetId}
+            hoveredAssetId={state.hoveredAssetId}
+            showRejected={state.showRejected}
+            isAnalyzing={state.isAnalyzing}
+            manualTool={manualTool}
+            manualSelection={manualSelection}
+            draftRect={draftRect}
+            polyPoints={polyPoints}
+            hoverPoint={hoverPoint}
+            canvasViewport={state.canvasViewport}
+            onManualToolChange={(tool) => {
+              setManualTool((current) => (current === tool ? null : tool));
+              setManualSelection(null);
+              setDraftRect(null);
+              setPolyPoints([]);
+              setHoverPoint(null);
+            }}
+            onManualSelectionChange={setManualSelection}
+            onDraftRectChange={setDraftRect}
+            onPolyPointsChange={setPolyPoints}
+            onHoverPointChange={setHoverPoint}
+            onResetManualSelection={resetManualSelection}
+            onCreateManualAsset={createManualAsset}
+            onCanvasViewportChange={onCanvasViewportChange}
+            onSelectAsset={onSelectAsset}
+            onHoverAsset={onHoverAsset}
+          />
+        ) : (
+          <UploadDropzone onFile={onFile} />
+        )}
+      </div>
 
-          {previewRect && (
-            <rect x={toPct(previewRect.x)} y={toPct(previewRect.y)} width={toPct(previewRect.w)} height={toPct(previewRect.h)}
-              fill="none" stroke="oklch(0.55 0.22 295)" strokeWidth="2" strokeDasharray="4 3" />
-          )}
-          {previewPoly && previewPoly.length >= 3 && (
-            <polygon points={previewPoly.map(p => `${p.x * 100}%,${p.y * 100}%`).join(" ")}
-              fill="none" stroke="oklch(0.55 0.22 295)" strokeWidth="2" strokeDasharray="4 3" />
-          )}
-          {tool === "pen" && polyPoints.length > 0 && (
+      {state.extractionMode === "auto" && (
+        <DetectionControls
+          settings={state.detectionSettings}
+          backgroundColor={state.backgroundColor}
+          disabled={!state.sourceImage}
+          isAnalyzing={state.isAnalyzing}
+          onChange={onSettingsChange}
+          onRunDetection={onRunDetection}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExtractionModeSwitch({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: ExtractionMode;
+  disabled: boolean;
+  onChange: (mode: ExtractionMode) => void;
+}) {
+  const modes: Array<{ id: ExtractionMode; label: string; detail: string; icon: typeof Sparkles }> =
+    [
+      {
+        id: "auto",
+        label: "Auto",
+        detail: "Detect regions from the source image.",
+        icon: Sparkles,
+      },
+      {
+        id: "manual",
+        label: "Manual",
+        detail: "Draw Box or Pen selections yourself.",
+        icon: PenTool,
+      },
+    ];
+
+  return (
+    <div className="flex items-center justify-between rounded-md border bg-card px-3 py-2">
+      <div className="text-xs text-muted-foreground">
+        {mode === "auto"
+          ? "Auto Mode tunes detection before you package assets."
+          : "Manual Mode lets you draw the exact crop areas you want."}
+      </div>
+      <div className="inline-flex rounded-md border bg-muted/35 p-0.5">
+        {modes.map((item) => (
+          <button
+            key={item.id}
+            disabled={disabled}
+            onClick={() => onChange(item.id)}
+            className={cn(
+              "flex h-8 min-w-24 items-center justify-center gap-2 rounded-[5px] px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+              mode === item.id
+                ? "bg-card text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+            title={item.detail}
+          >
+            <item.icon className="h-3.5 w-3.5" />
+            {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UploadDropzone({ onFile }: { onFile: (file: File) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const acceptFile = (file?: File) => {
+    if (file) onFile(file);
+  };
+
+  return (
+    <div
+      className={cn(
+        "flex h-full min-h-[360px] items-center justify-center p-6 transition-colors",
+        isDragging && "bg-primary-soft/40",
+      )}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setIsDragging(false);
+        acceptFile(event.dataTransfer.files?.[0]);
+      }}
+    >
+      <button
+        onClick={() => inputRef.current?.click()}
+        className={cn(
+          "checkerboard flex h-full w-full max-w-3xl flex-col items-center justify-center rounded-md border border-dashed p-8 text-center transition-all",
+          isDragging ? "border-primary shadow-sm" : "border-border hover:border-primary/70",
+        )}
+      >
+        <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-md border bg-card shadow-sm">
+          <Upload className="h-5 w-5 text-primary" />
+        </div>
+        <div className="text-base font-semibold">Drop an image to extract assets.</div>
+        <div className="mt-1 max-w-lg text-sm text-muted-foreground">
+          Best for AI-generated mockups, icon sheets, UI screenshots, sprite sheets, and visual
+          concept images.
+        </div>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {["Mockup", "Icon Sheet", "Sprite Sheet", "Screenshot", "Poster"].map((label) => (
+            <span key={label} className="rounded-md border bg-card px-2 py-1 text-[11px]">
+              {label}
+            </span>
+          ))}
+        </div>
+        <div className="mt-5 text-xs text-muted-foreground">Runs locally in your browser.</div>
+      </button>
+      <input
+        ref={inputRef}
+        hidden
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        onChange={(event) => acceptFile(event.target.files?.[0])}
+      />
+    </div>
+  );
+}
+
+function SourceCanvas({
+  extractionMode,
+  sourceImage,
+  assets,
+  selectedAssetId,
+  hoveredAssetId,
+  showRejected,
+  isAnalyzing,
+  manualTool,
+  manualSelection,
+  draftRect,
+  polyPoints,
+  hoverPoint,
+  canvasViewport,
+  onManualToolChange,
+  onManualSelectionChange,
+  onDraftRectChange,
+  onPolyPointsChange,
+  onHoverPointChange,
+  onResetManualSelection,
+  onCreateManualAsset,
+  onCanvasViewportChange,
+  onSelectAsset,
+  onHoverAsset,
+}: {
+  extractionMode: ExtractionMode;
+  sourceImage: SourceImage;
+  assets: ExtractedAsset[];
+  selectedAssetId: string | null;
+  hoveredAssetId: string | null;
+  showRejected: boolean;
+  isAnalyzing: boolean;
+  manualTool: ManualTool;
+  manualSelection: ManualSelection | null;
+  draftRect: (ManualSelection & { type: "rect" }) | null;
+  polyPoints: Point[];
+  hoverPoint: Point | null;
+  canvasViewport: AssetSparkState["canvasViewport"];
+  onManualToolChange: (tool: Exclude<ManualTool, null>) => void;
+  onManualSelectionChange: (selection: ManualSelection | null) => void;
+  onDraftRectChange: (rect: (ManualSelection & { type: "rect" }) | null) => void;
+  onPolyPointsChange: Dispatch<SetStateAction<Point[]>>;
+  onHoverPointChange: (point: Point | null) => void;
+  onResetManualSelection: () => void;
+  onCreateManualAsset: () => void;
+  onCanvasViewportChange: (viewport: Partial<AssetSparkState["canvasViewport"]>) => void;
+  onSelectAsset: (assetId: string | null) => void;
+  onHoverAsset: (assetId: string | null) => void;
+}) {
+  const drawableAssets = assets.filter((asset) => showRejected || !asset.rejected);
+  const manualMode = extractionMode === "manual";
+  const activeManualTool = manualMode ? manualTool : null;
+  const zoomPercent = Math.round(canvasViewport.zoom * 100);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const dragStartRef = useRef<Point | null>(null);
+  const latestDraftRectRef = useRef<(ManualSelection & { type: "rect" }) | null>(null);
+  const panStartRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    panX: number;
+    panY: number;
+  } | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [spacePressed, setSpacePressed] = useState(false);
+
+  const toNorm = (event: { clientX: number; clientY: number }): Point => {
+    const rect = overlayRef.current!.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+    };
+  };
+
+  const updateDraftRect = (rect: (ManualSelection & { type: "rect" }) | null) => {
+    latestDraftRectRef.current = rect;
+    onDraftRectChange(rect);
+  };
+
+  const finishPolygon = useCallback(() => {
+    if (polyPoints.length < 3) return;
+    onManualSelectionChange({ type: "poly", points: polyPoints });
+    onHoverPointChange(null);
+    onPolyPointsChange([]);
+  }, [onHoverPointChange, onManualSelectionChange, onPolyPointsChange, polyPoints]);
+
+  const fitImage = useCallback(() => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const availableWidth = Math.max(160, rect.width - 96);
+    const availableHeight = Math.max(160, rect.height - 96);
+    const nextZoom = clampCanvasZoom(
+      Math.min(availableWidth / sourceImage.width, availableHeight / sourceImage.height),
+    );
+    onCanvasViewportChange({ zoom: nextZoom, panX: 0, panY: 0 });
+  }, [onCanvasViewportChange, sourceImage.height, sourceImage.width]);
+
+  const zoomToPoint = useCallback(
+    (nextZoomValue: number, clientX?: number, clientY?: number) => {
+      const nextZoom = clampCanvasZoom(nextZoomValue);
+      const rect = canvasRef.current?.getBoundingClientRect();
+
+      if (!rect || clientX === undefined || clientY === undefined) {
+        onCanvasViewportChange({ zoom: nextZoom });
+        return;
+      }
+
+      const pointX = clientX - rect.left;
+      const pointY = clientY - rect.top;
+      const centerX = rect.width / 2;
+      const centerY = rect.height / 2;
+      const ratio = nextZoom / canvasViewport.zoom;
+
+      onCanvasViewportChange({
+        zoom: nextZoom,
+        panX: pointX - centerX - (pointX - centerX - canvasViewport.panX) * ratio,
+        panY: pointY - centerY - (pointY - centerY - canvasViewport.panY) * ratio,
+      });
+    },
+    [canvasViewport.panX, canvasViewport.panY, canvasViewport.zoom, onCanvasViewportChange],
+  );
+
+  const handleWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      if (event.ctrlKey || event.metaKey) {
+        const zoomFactor = Math.exp(-event.deltaY * 0.0015);
+        zoomToPoint(canvasViewport.zoom * zoomFactor, event.clientX, event.clientY);
+        return;
+      }
+
+      onCanvasViewportChange({
+        panX: canvasViewport.panX - event.deltaX,
+        panY: canvasViewport.panY - event.deltaY,
+      });
+    },
+    [
+      canvasViewport.panX,
+      canvasViewport.panY,
+      canvasViewport.zoom,
+      onCanvasViewportChange,
+      zoomToPoint,
+    ],
+  );
+
+  const startPanning = (event: PointerEvent<HTMLDivElement>) => {
+    const isDirectBoardDrag = event.target === event.currentTarget;
+    const wantsPan = event.button === 1 || spacePressed || (!activeManualTool && isDirectBoardDrag);
+    if (!wantsPan) return;
+
+    event.preventDefault();
+    panStartRef.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      panX: canvasViewport.panX,
+      panY: canvasViewport.panY,
+    };
+    setIsPanning(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const movePanning = (event: PointerEvent<HTMLDivElement>) => {
+    if (!panStartRef.current) return;
+    onCanvasViewportChange({
+      panX: panStartRef.current.panX + event.clientX - panStartRef.current.pointerX,
+      panY: panStartRef.current.panY + event.clientY - panStartRef.current.pointerY,
+    });
+  };
+
+  const stopPanning = (event: PointerEvent<HTMLDivElement>) => {
+    if (!panStartRef.current) return;
+    panStartRef.current = null;
+    setIsPanning(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(fitImage);
+    return () => window.cancelAnimationFrame(frame);
+  }, [fitImage, sourceImage.id]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === "Space") setSpacePressed(true);
+    };
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") setSpacePressed(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, []);
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-11 items-center justify-between border-b px-3">
+        <div className="flex items-center gap-2 text-xs font-medium">
+          <ImageIcon className="h-3.5 w-3.5" />
+          Source
+          <Badge variant="outline" className="h-5 rounded-[5px] px-1.5 text-[10px]">
+            {manualMode ? "Manual Mode" : "Auto Mode"}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          {manualMode && (
             <>
-              <polyline
-                points={[
-                  ...polyPoints.map(p => `${p.x * 100}%,${p.y * 100}%`),
-                  ...(hoverPoint ? [`${hoverPoint.x * 100}%,${hoverPoint.y * 100}%`] : []),
-                ].join(" ")}
-                fill="oklch(0.55 0.22 295 / 0.15)" stroke="oklch(0.55 0.22 295)" strokeWidth="2"
-              />
-              {polyPoints.map((p, i) => (
-                <circle key={i} cx={toPct(p.x)} cy={toPct(p.y)} r={i === 0 ? 5 : 3} fill="white" stroke="oklch(0.55 0.22 295)" strokeWidth="2" />
-              ))}
+              <Button
+                variant={manualTool === "box" ? "default" : "outline"}
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
+                onClick={() => onManualToolChange("box")}
+              >
+                <Square className="h-3.5 w-3.5" />
+                Box
+              </Button>
+              <Button
+                variant={manualTool === "pen" ? "default" : "outline"}
+                size="sm"
+                className="h-7 gap-1.5 px-2 text-xs"
+                onClick={() => onManualToolChange("pen")}
+              >
+                <PenTool className="h-3.5 w-3.5" />
+                Pen
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={!manualSelection}
+                onClick={onCreateManualAsset}
+              >
+                Create Asset
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={!manualTool && !manualSelection && !polyPoints.length}
+                onClick={onResetManualSelection}
+              >
+                Reset
+              </Button>
+              <div className="h-5 w-px bg-border" />
             </>
           )}
-          {/* Hover bbox highlight from assets grid */}
-          {hoverBbox && (
-            <rect
-              x={toPct(hoverBbox.x)} y={toPct(hoverBbox.y)}
-              width={toPct(hoverBbox.w)} height={toPct(hoverBbox.h)}
-              fill="oklch(0.55 0.22 295 / 0.12)" stroke="oklch(0.55 0.22 295)" strokeWidth="2"
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 w-7 p-0"
+            aria-label="Zoom out"
+            onClick={() => zoomToPoint(canvasViewport.zoom / CANVAS_ZOOM_STEP)}
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </Button>
+          <div className="flex h-7 min-w-16 items-center justify-center gap-1 rounded-md border bg-muted/25 px-2 text-[11px] text-muted-foreground">
+            <Move className="h-3.5 w-3.5" />
+            {zoomPercent}%
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 w-7 p-0"
+            aria-label="Zoom in"
+            onClick={() => zoomToPoint(canvasViewport.zoom * CANVAS_ZOOM_STEP)}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 px-2 text-xs"
+            onClick={fitImage}
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+            Fit
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 px-2 text-xs"
+            onClick={() => onCanvasViewportChange({ zoom: 1 })}
+          >
+            100%
+          </Button>
+          <div className="ml-2 flex items-center gap-3 text-[11px] text-muted-foreground">
+            <span>{drawableAssets.length} boxes</span>
+          </div>
+        </div>
+      </div>
+      <div
+        ref={canvasRef}
+        className={cn(
+          "asset-canvas-grid relative min-h-0 flex-1 overflow-hidden",
+          isPanning
+            ? "cursor-grabbing"
+            : spacePressed && !activeManualTool
+              ? "cursor-grab"
+              : "cursor-default",
+        )}
+        onWheel={handleWheel}
+        onPointerDown={startPanning}
+        onPointerMove={movePanning}
+        onPointerUp={stopPanning}
+        onPointerCancel={stopPanning}
+      >
+        {isAnalyzing && (
+          <div className="absolute right-4 top-4 z-10 flex items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs shadow-sm">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+            Analyzing foreground regions...
+          </div>
+        )}
+        <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border bg-card/95 px-3 py-2 text-[11px] text-muted-foreground shadow-sm">
+          Wheel pans. Cmd/Ctrl + wheel zooms. Hold Space and drag to pan.
+        </div>
+        <div
+          className="absolute"
+          style={{
+            height: sourceImage.height,
+            left: `calc(50% + ${canvasViewport.panX}px)`,
+            top: `calc(50% + ${canvasViewport.panY}px)`,
+            transform: `translate(-50%, -50%) scale(${canvasViewport.zoom})`,
+            transformOrigin: "center center",
+            width: sourceImage.width,
+          }}
+        >
+          <img
+            src={sourceImage.dataUrl}
+            alt={sourceImage.name}
+            className={cn(
+              "block h-full w-full rounded-sm object-contain shadow-sm",
+              isAnalyzing && "opacity-80",
+            )}
+            draggable={false}
+          />
+          <div
+            className={cn(
+              "absolute inset-0",
+              (activeManualTool || spacePressed) && "pointer-events-none",
+            )}
+          >
+            {drawableAssets.map((asset) => {
+              const selected = selectedAssetId === asset.id;
+              const hovered = hoveredAssetId === asset.id;
+              const width = asset.analysisSize.width;
+              const height = asset.analysisSize.height;
+              return (
+                <button
+                  key={asset.id}
+                  aria-label={`Select ${asset.name}`}
+                  onClick={() => onSelectAsset(asset.id)}
+                  onMouseEnter={() => onHoverAsset(asset.id)}
+                  onMouseLeave={() => onHoverAsset(null)}
+                  className={cn(
+                    "absolute border transition-colors",
+                    selected
+                      ? "border-primary bg-primary/10 shadow-[0_0_0_1px_var(--color-primary)]"
+                      : hovered
+                        ? "border-primary/80 bg-primary/5"
+                        : "border-primary/45 hover:border-primary",
+                    asset.rejected && "border-destructive/50 bg-destructive/10 opacity-60",
+                  )}
+                  style={{
+                    left: `${(asset.bbox.x / width) * 100}%`,
+                    top: `${(asset.bbox.y / height) * 100}%`,
+                    width: `${(asset.bbox.w / width) * 100}%`,
+                    height: `${(asset.bbox.h / height) * 100}%`,
+                  }}
+                />
+              );
+            })}
+          </div>
+          <ForwardedManualSelectionLayer
+            ref={overlayRef}
+            manualTool={activeManualTool}
+            manualSelection={manualSelection}
+            draftRect={draftRect}
+            polyPoints={polyPoints}
+            hoverPoint={hoverPoint}
+            onMouseDown={(event) => {
+              if (!activeManualTool || spacePressed) return;
+              const point = toNorm(event);
+              if (activeManualTool === "box") {
+                dragStartRef.current = point;
+                onManualSelectionChange(null);
+                updateDraftRect({ type: "rect", x: point.x, y: point.y, w: 0, h: 0 });
+              } else {
+                if (polyPoints.length >= 3) {
+                  const first = polyPoints[0];
+                  if (Math.hypot(first.x - point.x, first.y - point.y) < 0.025) {
+                    finishPolygon();
+                    return;
+                  }
+                }
+                onManualSelectionChange(null);
+                onPolyPointsChange((points) => [...points, point]);
+              }
+            }}
+            onMouseMove={(event) => {
+              if (!activeManualTool || spacePressed) return;
+              const point = toNorm(event);
+              if (activeManualTool === "box" && dragStartRef.current) {
+                const start = dragStartRef.current;
+                updateDraftRect({
+                  type: "rect",
+                  x: Math.min(start.x, point.x),
+                  y: Math.min(start.y, point.y),
+                  w: Math.abs(point.x - start.x),
+                  h: Math.abs(point.y - start.y),
+                });
+              } else if (activeManualTool === "pen" && polyPoints.length > 0) {
+                onHoverPointChange(point);
+              }
+            }}
+            onMouseUp={(event) => {
+              let finalRect = latestDraftRectRef.current;
+              if (activeManualTool === "box" && dragStartRef.current) {
+                const point = toNorm(event);
+                const start = dragStartRef.current;
+                finalRect = {
+                  type: "rect",
+                  x: Math.min(start.x, point.x),
+                  y: Math.min(start.y, point.y),
+                  w: Math.abs(point.x - start.x),
+                  h: Math.abs(point.y - start.y),
+                };
+              }
+              if (
+                activeManualTool === "box" &&
+                finalRect &&
+                finalRect.w > 0.01 &&
+                finalRect.h > 0.01
+              ) {
+                onManualSelectionChange(finalRect);
+              }
+              dragStartRef.current = null;
+              updateDraftRect(null);
+            }}
+            onDoubleClick={finishPolygon}
+          />
+        </div>
+      </div>
+      {manualMode && (
+        <div className="border-t bg-card px-3 py-2 text-[11px] text-muted-foreground">
+          {!manualTool &&
+            !manualSelection &&
+            "Choose Box or Pen, then draw directly on the source image."}
+          {manualSelection && "Manual selection ready. Create Asset adds it to the tray."}
+          {!manualSelection &&
+            manualTool === "box" &&
+            "Drag a rectangle over any region, then create a manual asset."}
+          {!manualSelection &&
+            manualTool === "pen" &&
+            "Click polygon points. Double-click, or click near the first point, to close the selection."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ManualSelectionLayer = (
+  {
+    manualTool,
+    manualSelection,
+    draftRect,
+    polyPoints,
+    hoverPoint,
+    onMouseDown,
+    onMouseMove,
+    onMouseUp,
+    onDoubleClick,
+  }: {
+    manualTool: ManualTool;
+    manualSelection: ManualSelection | null;
+    draftRect: (ManualSelection & { type: "rect" }) | null;
+    polyPoints: Point[];
+    hoverPoint: Point | null;
+    onMouseDown: (event: MouseEvent<HTMLDivElement>) => void;
+    onMouseMove: (event: MouseEvent<HTMLDivElement>) => void;
+    onMouseUp: (event: MouseEvent<HTMLDivElement>) => void;
+    onDoubleClick: () => void;
+  },
+  ref: Ref<HTMLDivElement>,
+) => {
+  const rect = draftRect ?? (manualSelection?.type === "rect" ? manualSelection : null);
+  const committedPoly = manualSelection?.type === "poly" ? manualSelection.points : null;
+  const draftPoly = manualTool === "pen" ? polyPoints : [];
+  const toPct = (value: number) => `${value * 100}%`;
+  const polyPointsString = (points: Point[]) =>
+    points.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
+  const capture = Boolean(manualTool);
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "absolute inset-0 z-20 select-none",
+        capture ? "cursor-crosshair" : "pointer-events-none",
+      )}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onDoubleClick={onDoubleClick}
+    >
+      <svg
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        preserveAspectRatio="none"
+        viewBox="0 0 100 100"
+      >
+        {rect && (
+          <rect
+            x={toPct(rect.x)}
+            y={toPct(rect.y)}
+            width={toPct(rect.w)}
+            height={toPct(rect.h)}
+            fill="oklch(0.55 0.22 295 / 0.12)"
+            stroke="oklch(0.55 0.22 295)"
+            strokeWidth="0.45"
+            strokeDasharray="1.2 0.8"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+        {committedPoly && committedPoly.length >= 3 && (
+          <polygon
+            points={polyPointsString(committedPoly)}
+            fill="oklch(0.55 0.22 295 / 0.12)"
+            stroke="oklch(0.55 0.22 295)"
+            strokeWidth="0.45"
+            strokeDasharray="1.2 0.8"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
+        {draftPoly.length > 0 && (
+          <>
+            <polyline
+              points={polyPointsString([...draftPoly, ...(hoverPoint ? [hoverPoint] : [])])}
+              fill="none"
+              stroke="oklch(0.55 0.22 295)"
+              strokeWidth="0.45"
+              vectorEffect="non-scaling-stroke"
             />
+            {draftPoly.map((point, index) => (
+              <circle
+                key={`${point.x}-${point.y}-${index}`}
+                cx={point.x * 100}
+                cy={point.y * 100}
+                r={index === 0 ? 1.05 : 0.75}
+                fill="white"
+                stroke="oklch(0.55 0.22 295)"
+                strokeWidth="0.35"
+                vectorEffect="non-scaling-stroke"
+              />
+            ))}
+          </>
+        )}
+      </svg>
+    </div>
+  );
+};
+
+const ForwardedManualSelectionLayer = forwardRef(ManualSelectionLayer);
+
+function DetectionControls({
+  settings,
+  backgroundColor,
+  disabled,
+  isAnalyzing,
+  onChange,
+  onRunDetection,
+}: {
+  settings: DetectionSettings;
+  backgroundColor: AssetSparkState["backgroundColor"];
+  disabled: boolean;
+  isAnalyzing: boolean;
+  onChange: (settings: Partial<DetectionSettings>) => void;
+  onRunDetection: () => void;
+}) {
+  return (
+    <TooltipProvider delayDuration={100}>
+      <section className="rounded-md border bg-card p-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <SlidersHorizontal className="h-4 w-4" />
+            Detection
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-[11px] text-muted-foreground">
+              Auto background: {rgbaToHex(backgroundColor) ?? "not sampled"}
+            </div>
+            <Button
+              size="sm"
+              onClick={onRunDetection}
+              disabled={disabled || isAnalyzing}
+              className="gap-2"
+            >
+              {isAnalyzing ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="h-3.5 w-3.5" />
+              )}
+              Run Detection
+            </Button>
+          </div>
+        </div>
+        <div className="grid grid-cols-5 gap-4">
+          <SliderField
+            label="Threshold"
+            help="How different a pixel must be from the sampled background before it counts as foreground. Higher is stricter and usually finds fewer pixels."
+            value={settings.threshold}
+            min={0}
+            max={100}
+            disabled={disabled}
+            onChange={(threshold) => onChange({ threshold })}
+          />
+          <SliderField
+            label="Sensitivity"
+            help="How aggressively faint foreground detail is kept. Higher sensitivity keeps more subtle edges and tiny marks, but may also include more noise."
+            value={settings.sensitivity}
+            min={0}
+            max={100}
+            disabled={disabled}
+            onChange={(sensitivity) => onChange({ sensitivity })}
+          />
+          <SliderField
+            label="Min area"
+            help="The smallest connected region that can become an asset. Raise it to remove specks; lower it to keep tiny icons or details."
+            value={settings.minComponentArea}
+            min={8}
+            max={1200}
+            step={8}
+            disabled={disabled}
+            onChange={(minComponentArea) => onChange({ minComponentArea })}
+          />
+          <SliderField
+            label="Merge"
+            help="How close separate detected regions can be before they are grouped into one asset. Raise it to combine pieces; lower it to split them."
+            value={settings.mergeDistance}
+            min={0}
+            max={40}
+            disabled={disabled}
+            onChange={(mergeDistance) => onChange({ mergeDistance })}
+          />
+          <SliderField
+            label="Padding"
+            help="Extra transparent space added around each crop. Raise it to preserve breathing room and shadows; lower it for tighter assets."
+            value={settings.padding}
+            min={0}
+            max={40}
+            disabled={disabled}
+            onChange={(padding) => onChange({ padding })}
+          />
+        </div>
+        <div className="mt-3 flex items-center justify-between text-xs">
+          <label className="flex items-center gap-2">
+            <Switch
+              checked={settings.preserveShadows}
+              disabled={disabled}
+              onCheckedChange={(preserveShadows) => onChange({ preserveShadows })}
+            />
+            Preserve soft shadow edges
+          </label>
+          <span className="text-muted-foreground">
+            Slider changes are staged. Run detection when the settings look right.
+          </span>
+        </div>
+      </section>
+    </TooltipProvider>
+  );
+}
+
+function SliderField({
+  label,
+  help,
+  value,
+  min,
+  max,
+  step = 1,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  help?: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between text-[11px]">
+        <span className="flex items-center gap-1.5 font-medium">
+          {label}
+          {help && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  aria-label={`More information about ${label}`}
+                >
+                  <Info className="h-3 w-3" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-64 text-xs leading-relaxed">
+                {help}
+              </TooltipContent>
+            </Tooltip>
           )}
-        </svg>
+        </span>
+        <span className="text-muted-foreground">{value}</span>
+      </div>
+      <Slider
+        value={[value]}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        onValueChange={(next) => onChange(next[0])}
+      />
+    </div>
+  );
+}
+
+function BottomAssetTray({
+  assets,
+  selectedAssetId,
+  hoveredAssetId,
+  showRejected,
+  allActiveSelected,
+  isAnalyzing,
+  error,
+  hasSource,
+  onSelectAsset,
+  onHoverAsset,
+  onToggleSelected,
+  onReject,
+  onRestore,
+  onToggleAll,
+  onShowRejected,
+}: {
+  assets: ExtractedAsset[];
+  selectedAssetId: string | null;
+  hoveredAssetId: string | null;
+  showRejected: boolean;
+  allActiveSelected: boolean;
+  isAnalyzing: boolean;
+  error: string | null;
+  hasSource: boolean;
+  onSelectAsset: (assetId: string | null) => void;
+  onHoverAsset: (assetId: string | null) => void;
+  onToggleSelected: (assetId: string) => void;
+  onReject: (assetId: string) => void;
+  onRestore: (assetId: string) => void;
+  onToggleAll: (selected: boolean) => void;
+  onShowRejected: (showRejected: boolean) => void;
+}) {
+  return (
+    <section className="col-start-2 row-start-3 min-w-0 border-t bg-card">
+      <AssetGrid
+        title="Assets"
+        assets={assets}
+        selectedAssetId={selectedAssetId}
+        hoveredAssetId={hoveredAssetId}
+        showRejected={showRejected}
+        allActiveSelected={allActiveSelected}
+        isAnalyzing={isAnalyzing}
+        error={error}
+        hasSource={hasSource}
+        compact
+        onSelectAsset={onSelectAsset}
+        onHoverAsset={onHoverAsset}
+        onToggleSelected={onToggleSelected}
+        onReject={onReject}
+        onRestore={onRestore}
+        onToggleAll={onToggleAll}
+        onShowRejected={onShowRejected}
+      />
+    </section>
+  );
+}
+
+function AssetLibrary({
+  assets,
+  activeAssets,
+  selectedAssetId,
+  showRejected,
+  allActiveSelected,
+  onSelectAsset,
+  onHoverAsset,
+  onToggleSelected,
+  onReject,
+  onRestore,
+  onToggleAll,
+  onShowRejected,
+}: {
+  assets: ExtractedAsset[];
+  activeAssets: ExtractedAsset[];
+  selectedAssetId: string | null;
+  showRejected: boolean;
+  allActiveSelected: boolean;
+  onSelectAsset: (assetId: string | null) => void;
+  onHoverAsset: (assetId: string | null) => void;
+  onToggleSelected: (assetId: string) => void;
+  onReject: (assetId: string) => void;
+  onRestore: (assetId: string) => void;
+  onToggleAll: (selected: boolean) => void;
+  onShowRejected: (showRejected: boolean) => void;
+}) {
+  return (
+    <div className="h-full min-h-0 p-4">
+      <div className="h-full rounded-md border bg-card">
+        <AssetGrid
+          title="Asset contact sheet"
+          assets={assets}
+          selectedAssetId={selectedAssetId}
+          hoveredAssetId={null}
+          showRejected={showRejected}
+          allActiveSelected={allActiveSelected}
+          isAnalyzing={false}
+          error={null}
+          activeCount={activeAssets.length}
+          onSelectAsset={onSelectAsset}
+          onHoverAsset={onHoverAsset}
+          onToggleSelected={onToggleSelected}
+          onReject={onReject}
+          onRestore={onRestore}
+          onToggleAll={onToggleAll}
+          onShowRejected={onShowRejected}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AssetGrid({
+  title,
+  assets,
+  selectedAssetId,
+  hoveredAssetId,
+  showRejected,
+  allActiveSelected,
+  isAnalyzing,
+  error,
+  hasSource = true,
+  activeCount,
+  compact = false,
+  onSelectAsset,
+  onHoverAsset,
+  onToggleSelected,
+  onReject,
+  onRestore,
+  onToggleAll,
+  onShowRejected,
+}: {
+  title: string;
+  assets: ExtractedAsset[];
+  selectedAssetId: string | null;
+  hoveredAssetId: string | null;
+  showRejected: boolean;
+  allActiveSelected: boolean;
+  isAnalyzing: boolean;
+  error: string | null;
+  hasSource?: boolean;
+  activeCount?: number;
+  compact?: boolean;
+  onSelectAsset: (assetId: string | null) => void;
+  onHoverAsset: (assetId: string | null) => void;
+  onToggleSelected: (assetId: string) => void;
+  onReject: (assetId: string) => void;
+  onRestore: (assetId: string) => void;
+  onToggleAll: (selected: boolean) => void;
+  onShowRejected: (showRejected: boolean) => void;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-11 items-center justify-between border-b px-3">
+        <div>
+          <div className="text-sm font-semibold">{title}</div>
+          <div className="text-[11px] text-muted-foreground">
+            {activeCount ?? assets.filter((asset) => !asset.rejected).length} active ·{" "}
+            {assets.length} visible
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-xs">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={allActiveSelected}
+              onCheckedChange={(checked) => onToggleAll(Boolean(checked))}
+              disabled={!assets.length}
+            />
+            Select all
+          </label>
+          <label className="flex items-center gap-2">
+            <Switch checked={showRejected} onCheckedChange={onShowRejected} />
+            Show rejected
+          </label>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {isAnalyzing && !assets.length ? (
+          <SkeletonGrid />
+        ) : error ? (
+          <EmptyGrid title="Detection failed." detail={error} />
+        ) : !hasSource ? (
+          <EmptyGrid
+            title="No source image loaded."
+            detail="Drop an image into the canvas to create an asset contact sheet."
+          />
+        ) : !assets.length ? (
+          <EmptyGrid
+            title="Nothing detected with current settings."
+            detail="Lower threshold, reduce minimum area, or try an image with stronger foreground contrast."
+          />
+        ) : (
+          <div
+            className={cn(
+              "grid gap-3",
+              compact
+                ? "grid-cols-[repeat(auto-fill,minmax(118px,1fr))]"
+                : "grid-cols-[repeat(auto-fill,minmax(148px,1fr))]",
+            )}
+          >
+            {assets.map((asset) => (
+              <AssetCard
+                key={asset.id}
+                asset={asset}
+                selected={selectedAssetId === asset.id}
+                hovered={hoveredAssetId === asset.id}
+                compact={compact}
+                onSelect={() => onSelectAsset(asset.id)}
+                onHover={(hovered) => onHoverAsset(hovered ? asset.id : null)}
+                onToggleSelected={() => onToggleSelected(asset.id)}
+                onReject={() => onReject(asset.id)}
+                onRestore={() => onRestore(asset.id)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssetCard({
+  asset,
+  selected,
+  hovered,
+  compact,
+  onSelect,
+  onHover,
+  onToggleSelected,
+  onReject,
+  onRestore,
+}: {
+  asset: ExtractedAsset;
+  selected: boolean;
+  hovered: boolean;
+  compact?: boolean;
+  onSelect: () => void;
+  onHover: (hovered: boolean) => void;
+  onToggleSelected: () => void;
+  onReject: () => void;
+  onRestore: () => void;
+}) {
+  return (
+    <div
+      onMouseEnter={() => onHover(true)}
+      onMouseLeave={() => onHover(false)}
+      className={cn(
+        "group rounded-md border bg-background transition-colors",
+        selected && "border-primary shadow-[0_0_0_1px_var(--color-primary)]",
+        hovered && !selected && "border-primary/70",
+        asset.rejected && "opacity-55",
+      )}
+    >
+      <button
+        className={cn(
+          "checkerboard flex w-full items-center justify-center overflow-hidden rounded-t-md border-b p-2",
+          compact ? "h-24" : "h-32",
+        )}
+        onClick={onSelect}
+      >
+        <img
+          src={asset.preview}
+          alt={asset.name}
+          className="max-h-full max-w-full object-contain"
+        />
+      </button>
+      <div className="space-y-2 p-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-xs font-medium">{asset.name}</div>
+            <div className="text-[10px] text-muted-foreground">
+              {asset.bbox.w}x{asset.bbox.h}
+            </div>
+          </div>
+          <Checkbox
+            checked={asset.selected}
+            disabled={asset.rejected}
+            onCheckedChange={onToggleSelected}
+            aria-label={`Select ${asset.name}`}
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
+            Pixel SVG
+          </Badge>
+          {asset.rejected ? (
+            <button onClick={onRestore} className="text-[10px] font-medium text-primary">
+              Restore
+            </button>
+          ) : (
+            <button onClick={onReject} className="text-muted-foreground hover:text-destructive">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssetInspector({
+  sourceImage,
+  selectedAsset,
+  activeCount,
+  selectedCount,
+  rejectedCount,
+  backgroundColor,
+  detectionSettings,
+  onRename,
+  onToggleSelected,
+  onReject,
+  onRestore,
+}: {
+  sourceImage: SourceImage | null;
+  selectedAsset: ExtractedAsset | null;
+  activeCount: number;
+  selectedCount: number;
+  rejectedCount: number;
+  backgroundColor: AssetSparkState["backgroundColor"];
+  detectionSettings: DetectionSettings;
+  onRename: (assetId: string, name: string) => void;
+  onToggleSelected: (assetId: string) => void;
+  onReject: (assetId: string) => void;
+  onRestore: (assetId: string) => void;
+}) {
+  return (
+    <aside className="col-start-3 row-span-2 row-start-2 min-h-0 border-l bg-card">
+      <div className="flex h-11 items-center justify-between border-b px-4">
+        <div className="text-sm font-semibold">Inspector</div>
+      </div>
+      <div className="h-[calc(100%-44px)] overflow-auto p-4">
+        {selectedAsset ? (
+          <SelectedAssetInspector
+            asset={selectedAsset}
+            onRename={onRename}
+            onToggleSelected={onToggleSelected}
+            onReject={onReject}
+            onRestore={onRestore}
+          />
+        ) : (
+          <SourceSummary
+            sourceImage={sourceImage}
+            activeCount={activeCount}
+            selectedCount={selectedCount}
+            rejectedCount={rejectedCount}
+            backgroundColor={backgroundColor}
+            detectionSettings={detectionSettings}
+          />
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function SelectedAssetInspector({
+  asset,
+  onRename,
+  onToggleSelected,
+  onReject,
+  onRestore,
+}: {
+  asset: ExtractedAsset;
+  onRename: (assetId: string, name: string) => void;
+  onToggleSelected: (assetId: string) => void;
+  onReject: (assetId: string) => void;
+  onRestore: (assetId: string) => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyText = async (label: string, text: string) => {
+    await navigator.clipboard?.writeText(text);
+    setCopied(label);
+    window.setTimeout(() => setCopied(null), 1000);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="checkerboard flex h-44 items-center justify-center rounded-md border p-3">
+        <img
+          src={asset.preview}
+          alt={asset.name}
+          className="max-h-full max-w-full object-contain"
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-medium">Name</label>
+        <Input value={asset.name} onChange={(event) => onRename(asset.id, event.target.value)} />
+      </div>
+
+      <InfoRows
+        rows={[
+          ["Slug", asset.slug],
+          ["Dimensions", `${asset.bbox.w}x${asset.bbox.h}`],
+          ["Bounds", `x ${asset.bbox.x}, y ${asset.bbox.y}`],
+          ["Kind", asset.kind],
+          ["Origin", asset.origin],
+          ["Quality", "Pixel SVG"],
+          ["Confidence", `${Math.round(asset.confidence * 100)}%`],
+        ]}
+      />
+
+      <div className="rounded-md border bg-muted/30 p-3 text-xs leading-relaxed">
+        <div className="font-medium">Quality note</div>
+        <p className="mt-1 text-muted-foreground">
+          Pixel SVG embeds the PNG crop. It preserves appearance but is not editable vector.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <div className="text-xs font-medium">Warnings</div>
+        <div className="flex flex-wrap gap-1.5">
+          {asset.warnings.map((warning) => (
+            <Badge key={warning} variant="outline" className="text-[10px]">
+              {warning}
+            </Badge>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => onToggleSelected(asset.id)}
+          className="gap-2"
+        >
+          <Check className="h-3.5 w-3.5" />
+          {asset.selected ? "Deselect" : "Select"}
+        </Button>
+        {asset.rejected ? (
+          <Button variant="outline" size="sm" onClick={() => onRestore(asset.id)} className="gap-2">
+            <RotateCcw className="h-3.5 w-3.5" />
+            Restore
+          </Button>
+        ) : (
+          <Button variant="outline" size="sm" onClick={() => onReject(asset.id)} className="gap-2">
+            <Trash2 className="h-3.5 w-3.5" />
+            Reject
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => copyText("slug", asset.slug)}
+          className="gap-2"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          {copied === "slug" ? "Copied" : "Copy slug"}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => copyText("dimensions", `${asset.bbox.w}x${asset.bbox.h}`)}
+          className="gap-2"
+        >
+          <Copy className="h-3.5 w-3.5" />
+          {copied === "dimensions" ? "Copied" : "Copy size"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SourceSummary({
+  sourceImage,
+  activeCount,
+  selectedCount,
+  rejectedCount,
+  backgroundColor,
+  detectionSettings,
+}: {
+  sourceImage: SourceImage | null;
+  activeCount: number;
+  selectedCount: number;
+  rejectedCount: number;
+  backgroundColor: AssetSparkState["backgroundColor"];
+  detectionSettings: DetectionSettings;
+}) {
+  if (!sourceImage) {
+    return (
+      <div className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
+        Import an image to inspect source metadata and detected assets.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <InfoRows
+        rows={[
+          ["File", sourceImage.name],
+          ["Dimensions", `${sourceImage.width}x${sourceImage.height}`],
+          ["Size", formatBytes(sourceImage.size)],
+          ["Type", sourceImage.type.replace("image/", "").toUpperCase()],
+          ["Background", rgbaToHex(backgroundColor) ?? "not sampled"],
+          ["Detected", `${activeCount}`],
+          ["Selected", `${selectedCount}`],
+          ["Rejected", `${rejectedCount}`],
+        ]}
+      />
+      <div className="rounded-md border bg-muted/30 p-3">
+        <div className="mb-2 text-xs font-medium">Detection settings</div>
+        <InfoRows
+          compact
+          rows={[
+            ["Threshold", String(detectionSettings.threshold)],
+            ["Sensitivity", String(detectionSettings.sensitivity)],
+            ["Min area", String(detectionSettings.minComponentArea)],
+            ["Merge", String(detectionSettings.mergeDistance)],
+            ["Padding", String(detectionSettings.padding)],
+          ]}
+        />
+      </div>
+    </div>
+  );
+}
+
+function InfoRows({ rows, compact = false }: { rows: Array<[string, string]>; compact?: boolean }) {
+  return (
+    <div className={cn("divide-y rounded-md border", compact ? "text-[11px]" : "text-xs")}>
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2 px-3 py-2">
+          <div className="text-muted-foreground">{label}</div>
+          <div className="truncate font-medium">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ExportPanel({
+  state,
+  exportableAssets,
+  onSettingsChange,
+  onExport,
+}: {
+  state: AssetSparkState;
+  exportableAssets: ExtractedAsset[];
+  onSettingsChange: (settings: Partial<ExportSettings>) => void;
+  onExport: () => void;
+}) {
+  const paths = getZipPreviewPaths(exportableAssets, state.exportSettings);
+  const canExport = Boolean(state.sourceImage && exportableAssets.length);
+  const exampleName = exportableAssets[0]
+    ? `${platformAssetFileBase(exportableAssets[0], state.exportSettings)}.png`
+    : `${slugifyName(state.exportSettings.filePrefix, state.exportSettings.namingStyle)}-001.png`;
+
+  return (
+    <div className="h-full min-h-0 overflow-auto p-4">
+      <div className="mx-auto grid max-w-5xl grid-cols-[minmax(0,1fr)_360px] gap-4">
+        <section className="rounded-md border bg-card p-4">
+          <div className="mb-4">
+            <div className="text-sm font-semibold">Export package</div>
+            <div className="text-xs text-muted-foreground">
+              Package selected assets for a generic archive, web app, iOS asset catalog, or Android
+              drawable folder.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <FieldGroup label="Platform">
+              <PlatformPresetSelector
+                value={state.exportSettings.platformPreset}
+                onChange={(platformPreset) => onSettingsChange({ platformPreset })}
+              />
+            </FieldGroup>
+
+            <FieldGroup label="Scope">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  checked={state.exportSettings.scope === "selected"}
+                  onChange={() => onSettingsChange({ scope: "selected" })}
+                />
+                Selected assets
+              </label>
+              <label className="mt-2 flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  checked={state.exportSettings.scope === "active"}
+                  onChange={() => onSettingsChange({ scope: "active" })}
+                />
+                All active assets
+              </label>
+            </FieldGroup>
+
+            <FieldGroup label="Formats">
+              <ExportCheckbox
+                label="Transparent PNG"
+                checked={state.exportSettings.includePng}
+                onChange={(includePng) => onSettingsChange({ includePng })}
+              />
+              <ExportCheckbox
+                label="Pixel SVG wrapper"
+                checked={state.exportSettings.includePixelSvg}
+                onChange={(includePixelSvg) => onSettingsChange({ includePixelSvg })}
+              />
+              <ExportCheckbox
+                label="Manifest JSON"
+                checked={state.exportSettings.includeManifest}
+                onChange={(includeManifest) => onSettingsChange({ includeManifest })}
+              />
+              <ExportCheckbox
+                label="README"
+                checked={state.exportSettings.includeReadme}
+                onChange={(includeReadme) => onSettingsChange({ includeReadme })}
+              />
+            </FieldGroup>
+
+            <FieldGroup label="Naming">
+              <label className="text-xs font-medium">Prefix</label>
+              <Input
+                value={state.exportSettings.filePrefix}
+                onChange={(event) => onSettingsChange({ filePrefix: event.target.value })}
+                className="mt-1"
+              />
+              <label className="mt-3 block text-xs font-medium">Style</label>
+              <select
+                value={state.exportSettings.namingStyle}
+                onChange={(event) =>
+                  onSettingsChange({
+                    namingStyle: event.target.value as ExportSettings["namingStyle"],
+                  })
+                }
+                className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option value="kebab">kebab-case</option>
+                <option value="snake">snake_case</option>
+              </select>
+              <div className="mt-2 text-[11px] text-muted-foreground">Example: {exampleName}</div>
+            </FieldGroup>
+
+            <FieldGroup label="Quality note">
+              <div className="rounded-md border bg-muted/30 p-3 text-xs leading-relaxed text-muted-foreground">
+                Pixel SVG preserves appearance by embedding the transparent PNG crop. Editable
+                vector tracing is not included in v1.
+              </div>
+            </FieldGroup>
+          </div>
+        </section>
+
+        <section className="rounded-md border bg-card p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+            <FileJson className="h-4 w-4" />
+            ZIP contents
+          </div>
+          <div className="max-h-[420px] overflow-auto rounded-md border bg-muted/20 p-3 font-mono text-[11px] leading-5">
+            {paths.length ? (
+              paths.map((path) => <div key={path}>{path}</div>)
+            ) : (
+              <div className="font-sans text-sm text-muted-foreground">
+                No assets ready to export.
+              </div>
+            )}
+          </div>
+          {state.lastExport && (
+            <div className="mt-3 rounded-md border bg-primary-soft/35 p-3 text-xs">
+              Exported {state.lastExport.assetCount} assets · {state.lastExport.fileName}
+            </div>
+          )}
+          <Button disabled={!canExport} onClick={onExport} className="mt-4 w-full gap-2">
+            <Download className="h-4 w-4" />
+            Export ZIP
+          </Button>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+const platformPresetOptions: Array<{
+  id: PlatformPreset;
+  label: string;
+  detail: string;
+}> = [
+  {
+    id: "generic",
+    label: "Generic",
+    detail: "Current archive layout with PNG, Pixel SVG, manifest, and README folders.",
+  },
+  {
+    id: "web",
+    label: "Web",
+    detail: "Adds src/assets folders and a TypeScript asset map for app imports.",
+  },
+  {
+    id: "ios",
+    label: "iOS",
+    detail: "Creates Assets.xcassets image set folders with Contents.json files.",
+  },
+  {
+    id: "android",
+    label: "Android",
+    detail: "Writes PNGs into app/src/main/res/drawable-nodpi using Android-safe names.",
+  },
+];
+
+function PlatformPresetSelector({
+  value,
+  onChange,
+}: {
+  value: PlatformPreset;
+  onChange: (value: PlatformPreset) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {platformPresetOptions.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          onClick={() => onChange(option.id)}
+          className={cn(
+            "rounded-md border p-2 text-left transition-colors",
+            value === option.id
+              ? "border-primary bg-primary-soft/55 text-foreground"
+              : "bg-background hover:bg-muted/50",
+          )}
+        >
+          <div className="text-xs font-semibold">{option.label}</div>
+          <div className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+            {option.detail}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="mb-3 text-xs font-semibold uppercase text-muted-foreground">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function ExportCheckbox({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="mb-2 flex items-center gap-2 text-sm last:mb-0">
+      <Checkbox checked={checked} onCheckedChange={(next) => onChange(Boolean(next))} />
+      {label}
+    </label>
+  );
+}
+
+function SettingsPanel({
+  state,
+  onReset,
+  onClear,
+}: {
+  state: AssetSparkState;
+  onReset: () => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="h-full overflow-auto p-4">
+      <div className="mx-auto max-w-3xl space-y-4">
+        <section className="rounded-md border bg-card p-4">
+          <div className="text-sm font-semibold">Tool defaults</div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Asset Spark is currently a local browser workflow. It does not upload source images or
+            exports.
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+            <InfoRows
+              rows={[
+                ["Threshold", String(state.detectionSettings.threshold)],
+                ["Sensitivity", String(state.detectionSettings.sensitivity)],
+                ["Min area", String(state.detectionSettings.minComponentArea)],
+                ["Padding", String(state.detectionSettings.padding)],
+              ]}
+            />
+            <InfoRows
+              rows={[
+                ["Platform", state.exportSettings.platformPreset],
+                ["Scope", state.exportSettings.scope],
+                ["PNG", state.exportSettings.includePng ? "included" : "off"],
+                ["Pixel SVG", state.exportSettings.includePixelSvg ? "included" : "off"],
+                ["Prefix", state.exportSettings.filePrefix],
+              ]}
+            />
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Button variant="outline" onClick={onReset} className="gap-2">
+              <RotateCcw className="h-4 w-4" />
+              Reset settings
+            </Button>
+            <Button variant="outline" onClick={onClear} className="gap-2">
+              <Trash2 className="h-4 w-4" />
+              Clear current project
+            </Button>
+          </div>
+        </section>
+
+        <section className="rounded-md border bg-card p-4">
+          <div className="text-sm font-semibold">Shortcuts</div>
+          <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+            <Shortcut label="Select all active" keys="Cmd/Ctrl + A" />
+            <Shortcut label="Export" keys="Cmd/Ctrl + E" />
+            <Shortcut label="Reject selected" keys="Delete" />
+            <Shortcut label="Clear selection" keys="Escape" />
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Shortcut({ label, keys }: { label: string; keys: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-md border px-3 py-2">
+      <span>{label}</span>
+      <code className="text-xs text-muted-foreground">{keys}</code>
+    </div>
+  );
+}
+
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(118px,1fr))] gap-3">
+      {Array.from({ length: 12 }).map((_, index) => (
+        <div key={index} className="h-36 animate-pulse rounded-md border bg-muted/40" />
+      ))}
+    </div>
+  );
+}
+
+function EmptyGrid({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="flex h-full min-h-32 items-center justify-center text-center">
+      <div>
+        <div className="text-sm font-medium">{title}</div>
+        <div className="mt-1 max-w-md text-xs text-muted-foreground">{detail}</div>
       </div>
     </div>
   );

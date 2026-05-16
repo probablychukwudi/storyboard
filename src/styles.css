@@ -160,3 +160,10 @@
   background-color: oklch(1 0 0);
 }
 
+.asset-canvas-grid {
+  background-color: oklch(0.975 0.004 280);
+  background-image:
+    linear-gradient(oklch(0.89 0.006 280 / 0.65) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.89 0.006 280 / 0.65) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
