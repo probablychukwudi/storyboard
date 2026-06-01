@@ -89,7 +89,7 @@ export interface ExportSummary {
   createdAt: string;
 }
 
-export interface AssetSparkState {
+export interface StoryboardState {
   activeView: ActiveView;
   extractionMode: ExtractionMode;
   sourceImage: SourceImage | null;
@@ -110,7 +110,7 @@ export interface AssetSparkState {
   lastExport: ExportSummary | null;
 }
 
-export type AssetSparkAction =
+export type StoryboardAction =
   | { type: "SET_VIEW"; view: ActiveView }
   | { type: "SET_EXTRACTION_MODE"; mode: ExtractionMode }
   | { type: "IMAGE_LOADED"; image: SourceImage }
@@ -121,7 +121,7 @@ export type AssetSparkAction =
   | { type: "UPDATE_DETECTION_SETTINGS"; settings: Partial<DetectionSettings> }
   | {
       type: "UPDATE_CANVAS_VIEWPORT";
-      viewport: Partial<AssetSparkState["canvasViewport"]>;
+      viewport: Partial<StoryboardState["canvasViewport"]>;
     }
   | { type: "UPDATE_EXPORT_SETTINGS"; settings: Partial<ExportSettings> }
   | { type: "SELECT_ASSET"; assetId: string | null }
@@ -136,8 +136,8 @@ export type AssetSparkAction =
   | { type: "CLEAR_PROJECT" }
   | { type: "RESET_SETTINGS" };
 
-export interface AssetSparkManifest {
-  app: "Asset Spark";
+export interface StoryboardManifest {
+  app: "Storyboard";
   version: 1;
   exportedAt: string;
   source: {

@@ -1,4 +1,4 @@
-import type { RGB, SourceImage } from "@/state/asset-spark-types";
+import type { RGB, SourceImage } from "@/state/storyboard-types";
 
 function createId() {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {

@@ -1,16 +1,16 @@
-import { initialAssetSparkState } from "./default-state";
-import type { AssetSparkAction, AssetSparkState } from "./asset-spark-types";
+import { initialStoryboardState } from "./default-state";
+import type { StoryboardAction, StoryboardState } from "./storyboard-types";
 import { slugifyName } from "@/lib/naming";
 
-function selectNextAssetId(state: AssetSparkState, rejectedAssetId: string) {
+function selectNextAssetId(state: StoryboardState, rejectedAssetId: string) {
   const next = state.assets.find((asset) => asset.id !== rejectedAssetId && !asset.rejected);
   return next?.id ?? null;
 }
 
-export function assetSparkReducer(
-  state: AssetSparkState,
-  action: AssetSparkAction,
-): AssetSparkState {
+export function storyboardReducer(
+  state: StoryboardState,
+  action: StoryboardAction,
+): StoryboardState {
   switch (action.type) {
     case "SET_VIEW":
       return { ...state, activeView: action.view };
@@ -28,7 +28,7 @@ export function assetSparkReducer(
         selectedAssetId: null,
         hoveredAssetId: null,
         backgroundColor: null,
-        canvasViewport: initialAssetSparkState.canvasViewport,
+        canvasViewport: initialStoryboardState.canvasViewport,
         error: null,
         lastExport: null,
       };
@@ -148,7 +148,7 @@ export function assetSparkReducer(
 
     case "CLEAR_PROJECT":
       return {
-        ...initialAssetSparkState,
+        ...initialStoryboardState,
         detectionSettings: state.detectionSettings,
         exportSettings: state.exportSettings,
       };
@@ -156,8 +156,8 @@ export function assetSparkReducer(
     case "RESET_SETTINGS":
       return {
         ...state,
-        detectionSettings: initialAssetSparkState.detectionSettings,
-        exportSettings: initialAssetSparkState.exportSettings,
+        detectionSettings: initialStoryboardState.detectionSettings,
+        exportSettings: initialStoryboardState.exportSettings,
       };
 
     default:

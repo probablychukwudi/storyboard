@@ -1,12 +1,12 @@
 import type {
-  AssetSparkManifest,
+  StoryboardManifest,
   DetectionSettings,
   ExportSettings,
   ExtractedAsset,
   SourceImage,
-} from "@/state/asset-spark-types";
+} from "@/state/storyboard-types";
 import { rgbaToHex } from "./image-utils";
-import type { RGB } from "@/state/asset-spark-types";
+import type { RGB } from "@/state/storyboard-types";
 
 export function buildManifest(params: {
   sourceImage: SourceImage;
@@ -19,11 +19,11 @@ export function buildManifest(params: {
     pngPath?: string;
     pixelSvgPath?: string;
   }>;
-}): AssetSparkManifest {
+}): StoryboardManifest {
   const fileMap = new Map(params.exportedFiles.map((file) => [file.assetId, file]));
 
   return {
-    app: "Asset Spark",
+    app: "Storyboard",
     version: 1,
     exportedAt: new Date().toISOString(),
     source: {

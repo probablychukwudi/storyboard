@@ -1,4 +1,4 @@
-import type { AssetSparkState, DetectionSettings, ExportSettings } from "./asset-spark-types";
+import type { StoryboardState, DetectionSettings, ExportSettings } from "./storyboard-types";
 
 export const defaultDetectionSettings: DetectionSettings = {
   threshold: 68,
@@ -22,7 +22,7 @@ export const defaultExportSettings: ExportSettings = {
   namingStyle: "kebab",
 };
 
-export const initialAssetSparkState: AssetSparkState = {
+export const initialStoryboardState: StoryboardState = {
   activeView: "extract",
   extractionMode: "auto",
   sourceImage: null,

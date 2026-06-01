@@ -10,7 +10,7 @@ import type {
   Point,
   RGB,
   SourceImage,
-} from "@/state/asset-spark-types";
+} from "@/state/storyboard-types";
 
 interface Component {
   minX: number;

@@ -1,6 +1,27 @@
 {
-  "name": "tanstack_start_ts",
-  "private": true,
+  "name": "storyboard",
+  "version": "0.1.0",
+  "description": "Local-first screenshot-to-SwiftUI studio for extracting UI assets and exporting buildable starter packs.",
+  "private": false,
+  "license": "MIT",
+  "author": "Chukwudi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/probablychukwudi/storyboard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/probablychukwudi/storyboard/issues"
+  },
+  "homepage": "https://github.com/probablychukwudi/storyboard#readme",
+  "keywords": [
+    "swiftui",
+    "ios",
+    "screenshot",
+    "asset-extraction",
+    "design-to-code",
+    "local-first",
+    "ai-ui"
+  ],
   "sideEffects": false,
   "type": "module",
   "scripts": {

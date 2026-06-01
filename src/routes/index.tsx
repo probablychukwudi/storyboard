@@ -26,6 +26,7 @@ import {
   Loader2,
   Maximize2,
   Minus,
+  Moon,
   Move,
   Package,
   PenTool,
@@ -36,6 +37,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Square,
+  Sun,
   Trash2,
   Upload,
   X,
@@ -46,6 +48,7 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { StoryboardLogo } from "@/components/storyboard-logo";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { createManualAssetFromSelection, extractAssetsFromSource } from "@/lib/extractor";
@@ -58,11 +61,11 @@ import {
 } from "@/lib/export-zip";
 import { formatBytes, slugifyName } from "@/lib/naming";
 import { loadImageFile, rgbaToHex } from "@/lib/image-utils";
-import { assetSparkReducer } from "@/state/asset-spark-reducer";
-import { initialAssetSparkState } from "@/state/default-state";
+import { storyboardReducer } from "@/state/storyboard-reducer";
+import { initialStoryboardState } from "@/state/default-state";
 import type {
   ActiveView,
-  AssetSparkState,
+  StoryboardState,
   DetectionSettings,
   ExportSettings,
   ExtractionMode,
@@ -71,16 +74,16 @@ import type {
   PlatformPreset,
   Point,
   SourceImage,
-} from "@/state/asset-spark-types";
+} from "@/state/storyboard-types";
 
 export const Route = createFileRoute("/")({
   component: Page,
   head: () => ({
     meta: [
-      { title: "Asset Spark — Local Asset Extraction Studio" },
+      { title: "Storyboard — Screenshot-to-SwiftUI Studio" },
       {
         name: "description",
-        content: "Extract, inspect, and package assets from generated images.",
+        content: "Extract, inspect, and package implementation-ready UI assets locally.",
       },
     ],
   }),
@@ -94,6 +97,7 @@ const navItems: Array<{ id: ActiveView; label: string; icon: typeof ImageIcon }>
 ];
 
 type ManualTool = "box" | "pen" | null;
+type ThemeMode = "light" | "dark";
 
 const MIN_CANVAS_ZOOM = 0.05;
 const MAX_CANVAS_ZOOM = 6;
@@ -104,7 +108,8 @@ function clampCanvasZoom(value: number) {
 }
 
 function Page() {
-  const [state, dispatch] = useReducer(assetSparkReducer, initialAssetSparkState);
+  const [state, dispatch] = useReducer(storyboardReducer, initialStoryboardState);
+  const [theme, setTheme] = useState<ThemeMode>("light");
 
   const activeAssets = useMemo(
     () => state.assets.filter((asset) => !asset.rejected),
@@ -127,6 +132,21 @@ function Page() {
   const rejectedCount = state.assets.length - activeAssets.length;
   const allActiveSelected =
     activeAssets.length > 0 && activeAssets.every((asset) => asset.selected);
+
+  useEffect(() => {
+    window.localStorage.removeItem("storyboard-theme");
+
+    const storedTheme = window.localStorage.getItem("storyboard-color-mode");
+    if (storedTheme === "dark" || storedTheme === "light") {
+      setTheme(storedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem("storyboard-color-mode", theme);
+  }, [theme]);
 
   const runDetection = useCallback(
     async (source = state.sourceImage, settings = state.detectionSettings) => {
@@ -176,7 +196,7 @@ function Page() {
       exportSettings: state.exportSettings,
       backgroundColor: state.backgroundColor,
     });
-    const fileName = "asset-spark-export.zip";
+    const fileName = "storyboard-export.zip";
     downloadBlob(zip, fileName);
     dispatch({
       type: "EXPORT_COMPLETED",
@@ -223,7 +243,7 @@ function Page() {
   }, []);
 
   const handleCanvasViewportChange = useCallback(
-    (viewport: Partial<AssetSparkState["canvasViewport"]>) => {
+    (viewport: Partial<StoryboardState["canvasViewport"]>) => {
       dispatch({ type: "UPDATE_CANVAS_VIEWPORT", viewport });
     },
     [],
@@ -264,11 +284,13 @@ function Page() {
       />
       <TopBar
         state={state}
+        theme={theme}
         activeCount={activeAssets.length}
         selectedCount={selectedCount}
         rejectedCount={rejectedCount}
         exportableCount={exportableAssets.length}
         onExportView={() => dispatch({ type: "SET_VIEW", view: "export" })}
+        onThemeToggle={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
       />
 
       <main className="min-h-0 min-w-0 overflow-hidden bg-background">
@@ -367,12 +389,10 @@ function Sidebar({
     <aside className="row-span-3 flex min-h-0 flex-col border-r bg-card">
       <div className="border-b px-4 py-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Sparkles className="h-4 w-4" />
-          </div>
-          <div>
-            <div className="text-sm font-semibold leading-tight">Asset Spark</div>
-            <div className="text-[11px] text-muted-foreground">Local asset studio</div>
+          <StoryboardLogo variant="mark" className="h-10 w-10 text-foreground" />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold leading-tight">Storyboard</div>
+            <div className="truncate text-[11px] text-muted-foreground">Screenshot-to-SwiftUI</div>
           </div>
         </div>
       </div>
@@ -413,18 +433,22 @@ function Sidebar({
 
 function TopBar({
   state,
+  theme,
   activeCount,
   selectedCount,
   rejectedCount,
   exportableCount,
   onExportView,
+  onThemeToggle,
 }: {
-  state: AssetSparkState;
+  state: StoryboardState;
+  theme: ThemeMode;
   activeCount: number;
   selectedCount: number;
   rejectedCount: number;
   exportableCount: number;
   onExportView: () => void;
+  onThemeToggle: () => void;
 }) {
   return (
     <header className="col-span-2 flex items-center justify-between border-b bg-card px-4">
@@ -449,10 +473,29 @@ function TopBar({
           )}
         </div>
       </div>
-      <Button onClick={onExportView} disabled={!exportableCount} className="gap-2">
-        <Download className="h-4 w-4" />
-        Export {exportableCount ? `(${exportableCount})` : ""}
-      </Button>
+      <div className="flex items-center gap-2">
+        <TooltipProvider delayDuration={100}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onThemeToggle}
+                aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+              >
+                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              Switch to {theme === "dark" ? "light" : "dark"} mode
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+        <Button onClick={onExportView} disabled={!exportableCount} className="gap-2">
+          <Download className="h-4 w-4" />
+          Export {exportableCount ? `(${exportableCount})` : ""}
+        </Button>
+      </div>
     </header>
   );
 }
@@ -468,7 +511,7 @@ function ExtractWorkspace({
   onExtractionModeChange,
   onCanvasViewportChange,
 }: {
-  state: AssetSparkState;
+  state: StoryboardState;
   selectedAsset: ExtractedAsset | null;
   onFile: (file: File) => void;
   onRunDetection: () => void;
@@ -477,7 +520,7 @@ function ExtractWorkspace({
   onSettingsChange: (settings: Partial<DetectionSettings>) => void;
   onCreateManualAsset: (selection: ManualSelection) => Promise<void>;
   onExtractionModeChange: (mode: ExtractionMode) => void;
-  onCanvasViewportChange: (viewport: Partial<AssetSparkState["canvasViewport"]>) => void;
+  onCanvasViewportChange: (viewport: Partial<StoryboardState["canvasViewport"]>) => void;
 }) {
   const [manualTool, setManualTool] = useState<ManualTool>(null);
   const [manualSelection, setManualSelection] = useState<ManualSelection | null>(null);
@@ -714,7 +757,7 @@ function SourceCanvas({
   draftRect: (ManualSelection & { type: "rect" }) | null;
   polyPoints: Point[];
   hoverPoint: Point | null;
-  canvasViewport: AssetSparkState["canvasViewport"];
+  canvasViewport: StoryboardState["canvasViewport"];
   onManualToolChange: (tool: Exclude<ManualTool, null>) => void;
   onManualSelectionChange: (selection: ManualSelection | null) => void;
   onDraftRectChange: (rect: (ManualSelection & { type: "rect" }) | null) => void;
@@ -722,7 +765,7 @@ function SourceCanvas({
   onHoverPointChange: (point: Point | null) => void;
   onResetManualSelection: () => void;
   onCreateManualAsset: () => void;
-  onCanvasViewportChange: (viewport: Partial<AssetSparkState["canvasViewport"]>) => void;
+  onCanvasViewportChange: (viewport: Partial<StoryboardState["canvasViewport"]>) => void;
   onSelectAsset: (assetId: string | null) => void;
   onHoverAsset: (assetId: string | null) => void;
 }) {
@@ -1254,7 +1297,7 @@ function DetectionControls({
   onRunDetection,
 }: {
   settings: DetectionSettings;
-  backgroundColor: AssetSparkState["backgroundColor"];
+  backgroundColor: StoryboardState["backgroundColor"];
   disabled: boolean;
   isAnalyzing: boolean;
   onChange: (settings: Partial<DetectionSettings>) => void;
@@ -1726,7 +1769,7 @@ function AssetInspector({
   activeCount: number;
   selectedCount: number;
   rejectedCount: number;
-  backgroundColor: AssetSparkState["backgroundColor"];
+  backgroundColor: StoryboardState["backgroundColor"];
   detectionSettings: DetectionSettings;
   onRename: (assetId: string, name: string) => void;
   onToggleSelected: (assetId: string) => void;
@@ -1884,7 +1927,7 @@ function SourceSummary({
   activeCount: number;
   selectedCount: number;
   rejectedCount: number;
-  backgroundColor: AssetSparkState["backgroundColor"];
+  backgroundColor: StoryboardState["backgroundColor"];
   detectionSettings: DetectionSettings;
 }) {
   if (!sourceImage) {
@@ -1945,7 +1988,7 @@ function ExportPanel({
   onSettingsChange,
   onExport,
 }: {
-  state: AssetSparkState;
+  state: StoryboardState;
   exportableAssets: ExtractedAsset[];
   onSettingsChange: (settings: Partial<ExportSettings>) => void;
   onExport: () => void;
@@ -1958,7 +2001,7 @@ function ExportPanel({
 
   return (
     <div className="h-full min-h-0 overflow-auto p-4">
-      <div className="mx-auto grid max-w-5xl grid-cols-[minmax(0,1fr)_360px] gap-4">
+      <div className="mx-auto grid max-w-5xl grid-cols-1 gap-4 2xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="rounded-md border bg-card p-4">
           <div className="mb-4">
             <div className="text-sm font-semibold">Export package</div>
@@ -1968,7 +2011,7 @@ function ExportPanel({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             <FieldGroup label="Platform">
               <PlatformPresetSelector
                 value={state.exportSettings.platformPreset}
@@ -2114,7 +2157,7 @@ function PlatformPresetSelector({
   onChange: (value: PlatformPreset) => void;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
       {platformPresetOptions.map((option) => (
         <button
           key={option.id}
@@ -2168,7 +2211,7 @@ function SettingsPanel({
   onReset,
   onClear,
 }: {
-  state: AssetSparkState;
+  state: StoryboardState;
   onReset: () => void;
   onClear: () => void;
 }) {
@@ -2178,7 +2221,7 @@ function SettingsPanel({
         <section className="rounded-md border bg-card p-4">
           <div className="text-sm font-semibold">Tool defaults</div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Asset Spark is currently a local browser workflow. It does not upload source images or
+            Storyboard is currently a local browser workflow. It does not upload source images or
             exports.
           </p>
           <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
