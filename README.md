@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="public/storyboard-logo.svg" alt="Storyboard" width="560" />
-</p>
+<h1 align="center">Storyboard</h1>
 
 <p align="center">
   <strong>Turn generated app screens into local assets, structured crops, and SwiftUI-ready starter packs.</strong>

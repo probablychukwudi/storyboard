@@ -48,7 +48,6 @@ import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { StoryboardLogo } from "@/components/storyboard-logo";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { createManualAssetFromSelection, extractAssetsFromSource } from "@/lib/extractor";
@@ -388,12 +387,9 @@ function Sidebar({
   return (
     <aside className="row-span-3 flex min-h-0 flex-col border-r bg-card">
       <div className="border-b px-4 py-4">
-        <div className="flex items-center gap-3">
-          <StoryboardLogo variant="mark" className="h-10 w-10 text-foreground" />
-          <div className="min-w-0">
-            <div className="text-sm font-semibold leading-tight">Storyboard</div>
-            <div className="truncate text-[11px] text-muted-foreground">Screenshot-to-SwiftUI</div>
-          </div>
+        <div className="min-w-0">
+          <div className="text-base font-semibold leading-tight tracking-normal">Storyboard</div>
+          <div className="truncate text-[11px] text-muted-foreground">Screenshot-to-SwiftUI</div>
         </div>
       </div>
 
